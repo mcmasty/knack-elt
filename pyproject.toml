@@ -1,0 +1,18 @@
+[project]
+name = "knack-elt"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dlt>=1.17.1",
+    "httpx[http2]>=0.28.1",
+    "icecream>=2.1.8",
+    "pydantic-settings>=2.11.0",
+]
+
+
+[tool.bumpversion]
+current_version = "0.1.0"
+commit = true
+tag = true
