@@ -16,9 +16,6 @@ Four diagrams:
 > `pipelines/knack_dlt.py` is the production twin of this repo's pipeline). They are
 > real, not aspirational — but they are not in this tree. Subgraph labels mark what
 > lives where.
->
-> An adjacent, separate consumer path (LanceDB / RAG / chat) is described in
-> [RAG_ARCHITECTURE.md](RAG_ARCHITECTURE.md) and is deliberately not folded in here.
 
 ---
 
