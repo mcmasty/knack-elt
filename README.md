@@ -139,8 +139,6 @@ row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works thr
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the reference architecture in plain language
   and in technical detail, the pipeline internals, a run sequence, and the SCD2 row model with
   the query patterns it requires. Also available as a [PDF](docs/ARCHITECTURE.pdf).
-- **[docs/RAG_ARCHITECTURE.md](docs/RAG_ARCHITECTURE.md)** — an adjacent consumer path: LanceDB
-  and chat/RAG access over the same Knack data.
 
 ## Related
 
