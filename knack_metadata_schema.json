@@ -1,0 +1,886 @@
+{
+  "$defs": {
+    "Application": {
+      "additionalProperties": true,
+      "description": "Represents a Knack application's metadata.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "home_scene": {
+          "$ref": "#/$defs/HomeScene"
+        },
+        "account": {
+          "additionalProperties": true,
+          "title": "Account",
+          "type": "object"
+        },
+        "objects": {
+          "items": {
+            "$ref": "#/$defs/KnackObject"
+          },
+          "title": "Objects",
+          "type": "array"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/Scene"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "counts": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Counts",
+          "type": "object"
+        },
+        "settings": {
+          "additionalProperties": true,
+          "title": "Settings",
+          "type": "object"
+        },
+        "design": {
+          "additionalProperties": true,
+          "title": "Design",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "slug",
+        "id",
+        "home_scene"
+      ],
+      "title": "Application",
+      "type": "object"
+    },
+    "Connection": {
+      "description": "Represents a connection between objects.",
+      "properties": {
+        "has": {
+          "title": "Has",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "field": {
+          "$ref": "#/$defs/ConnectionField"
+        },
+        "object": {
+          "title": "Object",
+          "type": "string"
+        },
+        "belongs_to": {
+          "title": "Belongs To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "has",
+        "key",
+        "name",
+        "field",
+        "object",
+        "belongs_to"
+      ],
+      "title": "Connection",
+      "type": "object"
+    },
+    "ConnectionField": {
+      "description": "Metadata about the connected field.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "inflections": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inflections"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ConnectionField",
+      "type": "object"
+    },
+    "Connections": {
+      "description": "Inbound and outbound connections for an object.",
+      "properties": {
+        "inbound": {
+          "items": {
+            "$ref": "#/$defs/Connection"
+          },
+          "title": "Inbound",
+          "type": "array"
+        },
+        "outbound": {
+          "items": {
+            "$ref": "#/$defs/Connection"
+          },
+          "title": "Outbound",
+          "type": "array"
+        }
+      },
+      "title": "Connections",
+      "type": "object"
+    },
+    "FieldFormat": {
+      "additionalProperties": true,
+      "description": "Format configuration for a field.",
+      "properties": {},
+      "title": "FieldFormat",
+      "type": "object"
+    },
+    "FieldRelationship": {
+      "description": "Connection relationship configuration.",
+      "properties": {
+        "has": {
+          "title": "Has",
+          "type": "string"
+        },
+        "object": {
+          "title": "Object",
+          "type": "string"
+        },
+        "belongs_to": {
+          "title": "Belongs To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "has",
+        "object",
+        "belongs_to"
+      ],
+      "title": "FieldRelationship",
+      "type": "object"
+    },
+    "HomeScene": {
+      "description": "Reference to the application's home scene.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "slug"
+      ],
+      "title": "HomeScene",
+      "type": "object"
+    },
+    "Inflections": {
+      "description": "Singular and plural forms of an object/field name.",
+      "properties": {
+        "singular": {
+          "title": "Singular",
+          "type": "string"
+        },
+        "plural": {
+          "title": "Plural",
+          "type": "string"
+        }
+      },
+      "required": [
+        "singular",
+        "plural"
+      ],
+      "title": "Inflections",
+      "type": "object"
+    },
+    "KnackField": {
+      "additionalProperties": true,
+      "description": "Represents a field in a Knack object.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "unique": {
+          "default": false,
+          "title": "Unique",
+          "type": "boolean"
+        },
+        "user": {
+          "default": false,
+          "title": "User",
+          "type": "boolean"
+        },
+        "conditional": {
+          "default": false,
+          "title": "Conditional",
+          "type": "boolean"
+        },
+        "rules": {
+          "items": {},
+          "title": "Rules",
+          "type": "array"
+        },
+        "validation": {
+          "items": {},
+          "title": "Validation",
+          "type": "array"
+        },
+        "isSystemField": {
+          "default": false,
+          "title": "Issystemfield",
+          "type": "boolean"
+        },
+        "code": {
+          "default": "",
+          "title": "Code",
+          "type": "string"
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relationship": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRelationship"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "immutable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Immutable"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "type"
+      ],
+      "title": "KnackField",
+      "type": "object"
+    },
+    "KnackObject": {
+      "additionalProperties": true,
+      "description": "Represents a data object (table) in Knack.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "inflections": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inflections"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "connections": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Connections"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/KnackField"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectSort"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "user": {
+          "default": false,
+          "title": "User",
+          "type": "boolean"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Identifier"
+        },
+        "profile_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Key"
+        },
+        "tasks": {
+          "items": {},
+          "title": "Tasks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "title": "KnackObject",
+      "type": "object"
+    },
+    "ObjectSort": {
+      "description": "Default sort configuration for an object.",
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "order": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "title": "Order",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "order"
+      ],
+      "title": "ObjectSort",
+      "type": "object"
+    },
+    "ParentSource": {
+      "description": "Parent connection information for a view source.",
+      "properties": {
+        "object": {
+          "title": "Object",
+          "type": "string"
+        },
+        "connection": {
+          "title": "Connection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "object",
+        "connection"
+      ],
+      "title": "ParentSource",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": true,
+      "description": "Represents a scene (page) in a Knack application.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "views": {
+          "items": {
+            "$ref": "#/$defs/View"
+          },
+          "title": "Views",
+          "type": "array"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent"
+        },
+        "menu_pages": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Menu Pages"
+        },
+        "authenticated": {
+          "default": false,
+          "title": "Authenticated",
+          "type": "boolean"
+        },
+        "groups": {
+          "items": {},
+          "title": "Groups",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "slug"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "View": {
+      "additionalProperties": true,
+      "description": "Represents a view in a Knack scene.",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ViewSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ViewColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "links": {
+          "items": {
+            "$ref": "#/$defs/ViewLink"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "inputs": {
+          "items": {},
+          "title": "Inputs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "name",
+        "type"
+      ],
+      "title": "View",
+      "type": "object"
+    },
+    "ViewColumn": {
+      "additionalProperties": true,
+      "description": "Column configuration in a table view.",
+      "properties": {
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "header": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Header"
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene"
+        }
+      },
+      "title": "ViewColumn",
+      "type": "object"
+    },
+    "ViewLink": {
+      "additionalProperties": true,
+      "description": "Link configuration in a menu view.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "ViewLink",
+      "type": "object"
+    },
+    "ViewSource": {
+      "additionalProperties": true,
+      "description": "Data source configuration for a view.",
+      "properties": {
+        "object": {
+          "title": "Object",
+          "type": "string"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ViewSourceSort"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "criteria": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ViewSourceCriteria"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParentSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "connection_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Connection Key"
+        },
+        "relationship_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relationship Type"
+        },
+        "authenticated_user": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authenticated User"
+        }
+      },
+      "required": [
+        "object"
+      ],
+      "title": "ViewSource",
+      "type": "object"
+    },
+    "ViewSourceCriteria": {
+      "description": "Filter criteria for a view's data source.",
+      "properties": {
+        "match": {
+          "title": "Match",
+          "type": "string"
+        },
+        "rules": {
+          "items": {},
+          "title": "Rules",
+          "type": "array"
+        },
+        "groups": {
+          "items": {},
+          "title": "Groups",
+          "type": "array"
+        }
+      },
+      "required": [
+        "match"
+      ],
+      "title": "ViewSourceCriteria",
+      "type": "object"
+    },
+    "ViewSourceSort": {
+      "description": "Sort configuration for a view's data source.",
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "order": {
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "title": "Order",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "order"
+      ],
+      "title": "ViewSourceSort",
+      "type": "object"
+    }
+  },
+  "description": "Root model for a Knack application export JSON.",
+  "properties": {
+    "application": {
+      "$ref": "#/$defs/Application"
+    }
+  },
+  "required": [
+    "application"
+  ],
+  "title": "KnackAppMetadata",
+  "type": "object"
+}

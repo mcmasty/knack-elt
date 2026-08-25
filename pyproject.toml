@@ -3,16 +3,46 @@ name = "knack-elt"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
-    "dlt>=1.17.1",
+    "dlt[duckdb]>=1.17.1",
     "httpx[http2]>=0.28.1",
     "icecream>=2.1.8",
+    "knack-sleuth>=0.1.19",
     "pydantic-settings>=2.11.0",
+    "pytest>=8.4.2",
+    "rich>=14.2.0",
+    "typer>=0.20.0",
 ]
+
+
+[project.scripts]
+knack-elt = "knack_elt.cli:cli"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
 
 
 [tool.bumpversion]
 current_version = "0.1.0"
 commit = true
 tag = true
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
+[[tool.bumpversion.files]]
+filename = "src/knack_elt/__init__.py"
+search = '__version__ = "{current_version}"'
+replace = '__version__ = "{new_version}"'
+
+
+[dependency-groups]
+dev = [
+    "bump-my-version>=1.2.4",
+    "pyhamcrest>=2.1.0",
+    "ruff>=0.14.2",
+]

@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Knack app metadata dumps (client schema — never commit)
+*_app_metadata_*.json
+
+# DuckDB local warehouses (large binaries — regenerate by re-running the pipeline)
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp/

@@ -1,10 +1,12 @@
-from config import settings
+from knack_elt.config import settings
 from icecream import ic
 
 import json
 import logging
 
-from mapping import remap_keys, create_app_mappings   
+from .mapping import remap_keys, create_app_mappings
+
+from knack_sleuth import Application
 
 import dlt
 from dlt.sources.helpers import requests
@@ -186,6 +188,23 @@ def knack_ave_source():
     ic(len(resources))
     return resources
 
+@dlt.source(max_table_nesting=0)
+def build_knack_resources(kn_app: Application):
+    resources = []
+    client = create_rest_client()
+    field_mappings, object_mappings, numeric_fields, default_values = create_app_mappings(kn_app)
+    
+    obj_list = list(object_mappings.items())
+    for obj in kn_app.objects:
+
+        table_resource = get_knack_table_data(obj.name, obj.key, client)
+        transformer_resource = get_remap_transformer(obj.name, field_mappings, numeric_fields, default_values)
+    
+        transformed_resource = table_resource | transformer_resource
+        resources.append(transformed_resource)
+    ic(len(resources))
+    return resources
+    
 
 if __name__ == "__main__":
     logger.info("Running knack_ave_pipeline")
