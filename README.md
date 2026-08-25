@@ -140,6 +140,10 @@ row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works thr
   and in technical detail, the pipeline internals, a run sequence, and the SCD2 row model with
   the query patterns it requires. Also available as a [PDF](docs/ARCHITECTURE.pdf).
 
+The PDF is generated from the markdown rather than maintained alongside it. After editing
+the diagrams, rebuild it with `uv run scripts/build_architecture_pdf.py` (needs node and
+Chrome) so the two don't drift apart.
+
 ## Related
 
 - [dlt](https://dlthub.com) — the load framework this is built on
