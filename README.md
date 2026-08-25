@@ -70,8 +70,8 @@ four — MotherDuck, dbt and Preset, orchestrated by a daily GitHub Actions job 
   object, so there is no table list to maintain. Add an object in Knack and the next run picks
   it up.
 - **Gives you readable column names.** `field_43` becomes `event_name`, slugified from the field
-  label you already chose in the builder. A field you named `id` is renamed rather than
-  colliding with Knack's own record id.
+  label you already chose in the builder. Knack's own row id is loaded as `record_id`, so a
+  field you named `id` keeps the `id` column it was named for.
 - **Cleans what the API hands back.** Empty strings become `NULL` in numeric fields, boolean
   fields get the default declared in Knack, and malformed JSON becomes `NULL` instead of
   failing the load.
@@ -95,10 +95,28 @@ uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID"
 Names are derived from your app's slug, so a second app never lands on the first one's tables:
 database `knack_{slug}_data`, dataset `{slug}`, pipeline `knack_{slug}_pipeline`.
 
-> **Note on destinations.** `run-pipeline` currently writes to a local DuckDB file under
-> `tests/data/`. The MotherDuck destination is present but commented out in
-> [`src/knack_elt/cli.py`](src/knack_elt/cli.py); making it a flag is the next obvious step.
-> Running `python -m knack_elt.knack_dlt` takes the older path, which does write to MotherDuck.
+### Destinations
+
+`--destination local` (the default) writes a DuckDB file — nothing to sign up for, so a fresh
+clone can be pointed at a Knack app and produce a queryable warehouse immediately. The file
+lands at `./tests/data/knack_{slug}_data.duckdb` unless you pass `--db-path`; the resolved
+path is printed on every run.
+
+```bash
+uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID" --db-path ~/knack.duckdb
+uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
+```
+
+`--destination motherduck` loads to `md:///knack_{slug}_data` and needs `motherduck_api_key`
+in the environment. Both destinations also write the run's `_load_info` and `_trace` tables.
+
+### Other flags
+
+| Flag | What it does |
+| --- | --- |
+| `--api-key` | Knack REST API key, if you would rather not set `KNACK_API_KEY` |
+| `--refresh-metadata` | Re-fetch app metadata instead of reusing knack-sleuth's 24h on-disk cache |
+| `--skip-unreadable` | Log and continue past objects that fail *before yielding any row* (typically no read permission). An object that fails partway through still aborts the run — loading a partial batch would retire live SCD2 rows as if the missing records had been deleted in Knack. |
 
 ## Configuration
 
@@ -113,7 +131,7 @@ Read from the environment or a `.env` file via `pydantic-settings`
 
 ## Querying what you get
 
-Because loads are SCD2, a record's history is several rows sharing one `id`, tagged with
+Because loads are SCD2, a record's history is several rows sharing one `record_id`, tagged with
 `_dlt_valid_from` and `_dlt_valid_to`. Two flags are worth deriving up front — conflating them
 is the most common way to get a wrong answer:
 
@@ -121,7 +139,7 @@ is the most common way to get a wrong answer:
 with flagged as (
     select
         *,
-        row_number() over (partition by id order by _dlt_valid_from desc) = 1
+        row_number() over (partition by record_id order by _dlt_valid_from desc) = 1
             as latest_version,      -- one row per record
         _dlt_valid_to is null as is_live_in_knack   -- still in the app?
     from your_dataset.some_table
@@ -133,6 +151,11 @@ A record deleted in Knack survives only as a *retired* row, so filtering on
 `_dlt_valid_to is null` alone silently drops exactly the history you built the warehouse for.
 And aggregating without `latest_version` double-counts, because every past version is still a
 row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works through both.
+
+> **One caveat on `is_live_in_knack`.** If an object returns *zero* records, dlt has nothing to
+> load for that table and the merge never runs, so rows loaded earlier keep `_dlt_valid_to is
+> null` and still read as live. Emptying an object in Knack is therefore invisible to the flag —
+> a table whose row count stops moving is worth checking against the app.
 
 ## Documentation
 
