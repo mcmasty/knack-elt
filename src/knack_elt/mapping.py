@@ -7,10 +7,28 @@ Goal is to keep this as lightweight and simple as possible.  To lean into dlt fu
 
 The input to these functions is the Application Metadata object from the Knack API, (https://api.knack.com/v1/applications/{app_id}))
 """
+import logging
 import re
 from typing import Dict, Any
 
-from knack_sleuth.models import KnackAppMetadata, Application
+from knack_sleuth.models import Application
+
+logger = logging.getLogger(__name__)
+
+
+# Field types whose values are numeric (or, for date_time, non-textual) and so must
+# have empty strings nulled before load — otherwise the column types as VARCHAR.
+# The aggregate types (sum/min/max/average/count) are connection roll-ups.
+NUMERIC_FIELD_TYPES = [
+    'number', 'currency', 'link', 'date_time', 'auto_increment',
+    'count', 'sum', 'min', 'max', 'average', 'equation', 'rating',
+]
+
+
+def slugify_field_name(field_name: str) -> str:
+    """Lowercase snake_case a Knack field name. May return '' for a name with no
+    ASCII alphanumerics (e.g. "%" or a fully non-Latin name) - callers must handle it."""
+    return re.sub(r'[^a-z0-9]+', '_', field_name.lower()).strip('_')
 
 
 def create_app_mappings(app_metadata: Application) -> tuple[
@@ -28,8 +46,24 @@ def create_app_mappings(app_metadata: Application) -> tuple[
     - default_values: Dictionary of default values for fields (primarily boolean fields).
     """
     
-    restricted_field_names = ['id']  # if the Knack User defined a field with the name 'id', it will be overwritten
-    #  (cont.) with object_name_id.  Knack row id is always 'id', thus user defined stamps on it.
+    # Columns the pipeline owns. A user-defined field slugifying onto one of these would
+    # silently replace it, so it is renamed <singular>_<name> instead.
+    #
+    # 'id' is deliberately NOT reserved: the pipeline renames Knack's row id to
+    # 'record_id' (see knack_dlt.RECORD_KEY), so a user field named "ID" keeps the plain
+    # 'id' column it was named for.
+    #
+    # 'record_id' IS reserved, because Knack now auto-adds a short_text field named
+    # "Record ID" to every object holding a copy of the row id (verified live 2026-08-25
+    # across three apps; 3,562 Illinois records, all non-blank and all equal to 'id').
+    # Left unreserved it would slugify onto the merge key and overwrite it. Reserving it
+    # costs one redundant <singular>_record_id column per table, which is preferable to a
+    # schema whose shape depends on whether any row's values happen to diverge.
+    #
+    # Not covered: user objects also return account_status, approval_status, utility_key,
+    # profile_keys and profile_keys_raw. Renaming e.g. an "Account Status" field on a
+    # non-user object would be gratuitous, so those are left alone.
+    restricted_field_names = ['record_id']
     field_mappings = {}
     object_mappings = {}
     default_values = {}
@@ -47,21 +81,37 @@ def create_app_mappings(app_metadata: Application) -> tuple[
 
         # Create field mapping for this object
         field_mappings[object_id] = {}
+        used_slugs = {}
 
         for field in obj.fields:
             field_key = field.key
             field_name = field.name
             
-            # Handle restricted field names
-            if field_name.lower().strip() in restricted_field_names:
-                field_name = f"{singular}_{field_name.lower()}"
-            
-            # Slugify field name
-            new_key = re.sub(r'[^a-z0-9]+', '_', field_name.lower()).strip('_')
+            # Slugify field name. Two distinct Knack fields can legally slugify to
+            # the same name ("Total ($)" and "Total (%)" both -> "total"), and a name
+            # with no ASCII alphanumerics slugifies to "". Either case would collapse
+            # columns in remap_keys, where the last field silently wins - so fall back
+            # to the Knack field key, which is unique app-wide.
+            new_key = slugify_field_name(field_name)
+            if not new_key:
+                new_key = field_key
+            # Compare the *slug*, not the raw name: Knack's auto-added field is named
+            # "Record ID", which lowercases to "record id" and only becomes "record_id"
+            # after slugification.
+            if new_key in restricted_field_names:
+                new_key = slugify_field_name(f"{singular} {new_key}") or f"{field_key}_{new_key}"
+            if new_key in used_slugs:
+                collided_with = used_slugs[new_key]
+                new_key = f"{new_key}_{field_key}"
+                logger.warning(
+                    f"Field name {field_name!r} ({field_key}) on {object_name!r} slugifies onto "
+                    f"{collided_with}'s column; loading it as {new_key!r} instead."
+                )
+            used_slugs[new_key] = field_key
             field_mappings[object_id][field_key] = new_key
             
             # Track numeric fields
-            if field.type in ['number', 'currency', 'link', 'date_time', 'auto_increment', 'count']:
+            if field.type in NUMERIC_FIELD_TYPES:
                 numeric_fields.append(new_key)
                 numeric_fields.append(field_key)
                 numeric_fields.append(field_name)

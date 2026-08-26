@@ -94,11 +94,11 @@ flowchart TB
     end
 
     subgraph elt["Ingestion — knack-elt (THIS REPO)"]
-        pipe["dlt pipeline<br/>extract · normalize · load<br/>merge, strategy = scd2<br/>primary key = id"]
+        pipe["dlt pipeline<br/>extract · normalize · load<br/>merge, strategy = scd2<br/>primary key = record_id"]
     end
 
     subgraph md["Warehouse — MotherDuck (DuckDB cloud)"]
-        raw[("raw schema — dlt writes here<br/>e.g. knack_avondale_data.avondale<br/>one table per Knack object<br/>full SCD2 history")]
+        raw[("raw schema — dlt writes here<br/>knack_{slug}_data.{slug}<br/>one table per Knack object<br/>full SCD2 history")]
         obs[("_load_info · _trace<br/>pipeline observability")]
 
         subgraph rep["reporting schema — the tables people query<br/>defined and built by dbt (companion repo)"]
@@ -140,7 +140,7 @@ flowchart TB
 
 | Schema | Owner | Contents | Rule |
 |---|---|---|---|
-| raw (e.g. `avondale`) | dlt | One table per Knack object, full SCD2 history, Knack-shaped values | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
+| raw (the app slug, e.g. `acme_ops`) | dlt | One table per Knack object, full SCD2 history, Knack-shaped values | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
 | `reporting` | dbt | Staging + mart views | Everything downstream reads here. No dashboard queries raw directly. |
 
 Staging exists so that exactly one layer absorbs the mess Knack and dlt produce
@@ -176,8 +176,8 @@ flowchart TB
         cam["create_app_mappings()"]
         meta --> cam
         cam --> om["object_mappings<br/>object name → object_id"]
-        cam --> fm["field_mappings<br/>object_id → field_key → slug"]
-        cam --> nf["numeric_fields<br/>number · currency · link · date_time<br/>auto_increment · count"]
+        cam --> fm["field_mappings<br/>object_id → field_key → slug<br/>colliding or empty slug → field key"]
+        cam --> nf["numeric_fields<br/>number · currency · link · date_time<br/>auto_increment · count · sum · min · max<br/>average · equation · rating"]
         cam --> dv["default_values<br/>boolean field defaults"]
     end
 
@@ -189,7 +189,7 @@ flowchart TB
         subgraph resource["dlt.resource — get_knack_table_data()"]
             direction TB
             pg["client.paginate<br/>/objects/{object_id}/records<br/>rows_per_page=1000 · format=raw"]
-            stamp["stamp table_name + object_id<br/>onto every row"]
+            stamp["rename id → record_id<br/>stamp _kn_table_name + _kn_object_id"]
             pk{"row has an id?"}
             skip["log warning, drop row"]
             cjf["clean_json_fields()<br/>invalid or empty JSON → None"]
@@ -219,7 +219,7 @@ flowchart TB
     subgraph load["Load — dlt"]
         direction TB
         norm["normalize<br/>max_table_nesting=0 → flat tables"]
-        merge["merge, strategy = scd2<br/>primary_key = id"]
+        merge["merge, strategy = scd2<br/>primary_key = record_id"]
         dest[("destination<br/>DuckDB or MotherDuck")]
         info["load_info + trace<br/>→ _load_info / _trace tables"]
         norm --> merge --> dest --> info
@@ -229,12 +229,25 @@ flowchart TB
 **Notes on the mapping pass**
 
 - Field names are slugified with `re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')`,
-  so `"Vocalist / Song Details"` becomes `vocalist_song_details`.
-- A user-defined Knack field literally named `id` would collide with Knack's own
-  record id, so it is renamed to `<singular>_id` (e.g. `worker_id`). Knack's row id
-  is always `id`, and it is the pipeline's primary key.
-- `numeric_fields` and `default_values` are registered under the field key, the raw
-  name, **and** the slug, because cleaning runs before and after the remap.
+  so `"Work Order / Job Details"` becomes `work_order_job_details`.
+- Two field names can legally slugify to the same string (`"Total ($)"` and `"Total (%)"`
+  both give `total`), and a name with no ASCII alphanumerics slugifies to the empty string.
+  Either would collapse columns in `remap_keys`, where the last field silently wins, so a
+  colliding or empty slug falls back to the Knack field key (`total_field_12`) and logs a
+  warning.
+- Knack's row id arrives as the top-level `id` key and is renamed to `record_id`, which
+  is the pipeline's primary key. That frees the `id` column for a user-defined field named
+  "ID" - common in Knack apps, which often carry their own invoice or payment numbering.
+  The key is taken from the payload, not from Knack's auto-added "Record ID" *field*, so it
+  works identically on apps that predate that field.
+- Knack now auto-adds a `short_text` field named "Record ID" to every object, holding a copy
+  of the row id. Its slug would land on the merge key, so it is reserved and renamed to
+  `<singular>_record_id` (e.g. `worker_record_id`) - a redundant column, kept in preference
+  to a schema whose shape depends on whether any row's values happen to diverge.
+- Cleaning runs **before** the remap only, so it matches on raw Knack field keys.
+  `numeric_fields` and `default_values` are also registered under the raw name and the
+  slug, but those entries are never reached — harmless, and worth knowing before you
+  go looking for a second cleaning pass.
 - `remap_keys` falls back to the original key when no mapping exists, so an unmapped
   object still loads — with `field_NN` column names.
 
@@ -243,7 +256,8 @@ flowchart TB
 ## 3. Run sequence
 
 The packaged entry point is the Typer CLI (`knack-elt run-pipeline`). It takes the
-app metadata from knack-sleuth rather than fetching it itself.
+app metadata from knack-sleuth rather than fetching it itself, and builds the record
+client from the *same* app id and key, so metadata and records always describe one app.
 
 ```mermaid
 sequenceDiagram
@@ -257,7 +271,7 @@ sequenceDiagram
     participant DLT as dlt pipeline
     participant Dest as DuckDB / MotherDuck
 
-    Dev->>CLI: knack-elt run-pipeline --app-id APP
+    Dev->>CLI: knack-elt run-pipeline --app-id APP<br/>[--destination local|motherduck]
     CLI->>Sleuth: load_app_metadata(app_id)
     Sleuth->>Knack: GET /applications/{app_id}
     Knack-->>Sleuth: app metadata
@@ -266,7 +280,11 @@ sequenceDiagram
     Note over CLI: derive names from app slug:<br/>db knack_{slug}_data<br/>dataset {slug}<br/>(hyphens → underscores)<br/>pipeline knack_{slug}_pipeline
 
     CLI->>DLT: dlt.pipeline(name, dataset, destination)
-    CLI->>Src: build_knack_resources(kn_app)
+    CLI->>CLI: create_rest_client(app_id, api_key)
+
+    Note over CLI: the same app id drives metadata,<br/>records and naming - they cannot disagree
+
+    CLI->>Src: build_knack_resources(kn_app, client)
     Src->>Src: create_app_mappings(kn_app)
 
     loop per Knack object
@@ -286,24 +304,24 @@ sequenceDiagram
     end
 
     DLT->>DLT: normalize (flat, max_table_nesting=0)
-    DLT->>Dest: load — merge / scd2 on id
+    DLT->>Dest: load — merge / scd2 on record_id
     Dest-->>DLT: load_info
     DLT-->>CLI: load_info
     CLI-->>Dev: run summary
 ```
 
-**Two entry points, and they do not target the same destination today:**
+**One entry point, two destinations:**
 
-| Entry point | Metadata source | Object list | Destination |
-|---|---|---|---|
-| `cli.py run_pipeline` (`knack-elt run-pipeline`) | knack-sleuth `load_app_metadata()` | every object in the app | **local DuckDB** at `tests/data/knack_{slug}_data.duckdb` — the MotherDuck destination is present but commented out (`cli.py:80-84`, see the TODO at `cli.py:68`) |
-| `python -m knack_elt.knack_dlt` (`knack_ave_source`) | its own HTTP `GET /applications/{id}` | every object in the app | **MotherDuck**, database name hardcoded to `knack_avondale_data` |
+| `--destination` | Target | Requires |
+|---|---|---|
+| `local` (default) | a DuckDB file at `./tests/data/knack_{slug}_data.duckdb`, or wherever `--db-path` points | nothing — this is the zero-setup path, so a fresh clone can load a Knack app straight away |
+| `motherduck` | `md:///knack_{slug}_data` | `motherduck_api_key` in the environment or `.env` |
 
-The `__main__` path is the older one; it also sets `load.workers = 3`,
-`truncate_staging_dataset = True`, exports the schema to `pipelines/schemas/export`,
-and writes `load_info` and the run trace back to the destination as `_load_info`
-and `_trace`. Making the destination a CLI flag is the obvious next step and the
-TODO already names it.
+Either way the run sets `load.workers = 3` and `truncate_staging_dataset = True`, and
+writes `load_info` and the run trace back to the destination as `_load_info` and `_trace`.
+
+The application id and REST API key are threaded from the CLI into the record client, so
+`--app-id` alone fully determines which app is read — metadata and records cannot disagree.
 
 ---
 
@@ -312,22 +330,22 @@ TODO already names it.
 Every table is loaded with `write_disposition={"disposition": "merge", "strategy": "scd2"}`,
 so the warehouse is **append-and-retire, not overwrite**. dlt adds `_dlt_valid_from`
 and `_dlt_valid_to` to every row. A record's history is therefore several rows sharing
-one `id`.
+one `record_id`.
 
 ```mermaid
 flowchart TB
     subgraph run1["Sync 1 — record first seen"]
-        a1["id=abc · status='Booked'<br/>_dlt_valid_from = T1<br/>_dlt_valid_to = NULL"]
+        a1["record_id=abc · status='Booked'<br/>_dlt_valid_from = T1<br/>_dlt_valid_to = NULL"]
     end
 
     subgraph run2["Sync 2 — value changed in Knack"]
-        b1["id=abc · status='Booked'<br/>_dlt_valid_from = T1<br/>_dlt_valid_to = T2 ← retired"]
-        b2["id=abc · status='Confirmed'<br/>_dlt_valid_from = T2<br/>_dlt_valid_to = NULL ← current"]
+        b1["record_id=abc · status='Booked'<br/>_dlt_valid_from = T1<br/>_dlt_valid_to = T2 ← retired"]
+        b2["record_id=abc · status='Confirmed'<br/>_dlt_valid_from = T2<br/>_dlt_valid_to = NULL ← current"]
     end
 
     subgraph run3["Sync 3 — record deleted from Knack"]
-        c1["id=abc · status='Booked'<br/>valid T1 → T2"]
-        c2["id=abc · status='Confirmed'<br/>_dlt_valid_from = T2<br/>_dlt_valid_to = T3<br/>retired with NO successor"]
+        c1["record_id=abc · status='Booked'<br/>valid T1 → T2"]
+        c2["record_id=abc · status='Confirmed'<br/>_dlt_valid_from = T2<br/>_dlt_valid_to = T3<br/>retired with NO successor"]
     end
 
     run1 --> run2 --> run3
@@ -343,10 +361,10 @@ the most common way to get a wrong answer out of this stack:
 with flagged as (
     select
         *,
-        row_number() over (partition by id order by _dlt_valid_from desc) = 1
+        row_number() over (partition by record_id order by _dlt_valid_from desc) = 1
             as latest_version,
         _dlt_valid_to is null as is_live_in_knack
-    from avondale.some_table          -- the raw, dlt-owned schema
+    from acme_ops.some_table         -- the raw, dlt-owned schema
 )
 select * from flagged where latest_version
 ```
@@ -360,10 +378,11 @@ select * from flagged where latest_version
 
 Two traps worth stating explicitly:
 
-- **Partition by `id`, not by a Knack field that looks like an id.** `id` is the
-  canonical Knack record id supplied by the API and is populated on every row. A
-  user-added "Record ID" *field* is NULL on rows created before it existed, and
-  partitioning on it collapses all of them into one NULL group and corrupts the flags.
+- **Partition by `record_id`, not by a column that looks like an id.** `record_id` is the
+  canonical Knack row id, taken from the API payload and populated on every row. `id` may
+  hold an app's own numbering, and `<singular>_record_id` is Knack's auto-added *field* -
+  a copy, but a user-editable one that can be blank on rows created before it existed.
+  Partitioning on either collapses rows into wrong groups and corrupts the flags.
 - **Aggregate without `latest_version` and you double-count.** Every historical
   version of a row is still a row. A `SUM()` over the raw table sums every version
   of every record.
