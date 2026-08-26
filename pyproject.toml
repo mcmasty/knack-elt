@@ -5,12 +5,12 @@ description = "Generic ELT pipeline: extract any Knack application into DuckDB o
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "dlt[duckdb]>=1.17.1",
+    "dlt[duckdb]>=1.30.0",
     "httpx[http2]>=0.28.1",
-    "knack-sleuth>=0.1.19",
-    "pydantic-settings>=2.11.0",
-    "rich>=14.2.0",
-    "typer>=0.20.0",
+    "knack-sleuth>=0.7.1",
+    "pydantic-settings>=2.15.0",
+    "rich>=15.0.0",
+    "typer>=0.27.1",
 ]
 
 
@@ -21,6 +21,21 @@ knack-elt = "knack_elt.cli:cli"
 requires = ["uv_build>=0.9.5,<0.10.0"]
 build-backend = "uv_build"
 
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+# Pinned explicitly: ruff's default rule set widens between releases, and CI
+# should fail on our choices rather than on ruff's changing defaults.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",  # line length - not enforced, comments here carry reasoning
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API *is* function calls in argument defaults.
+"src/knack_elt/cli.py" = ["B008"]
 
 [tool.bumpversion]
 current_version = "0.2.0"
@@ -40,8 +55,7 @@ replace = '__version__ = "{new_version}"'
 
 [dependency-groups]
 dev = [
-    "bump-my-version>=1.2.4",
-    "pytest>=8.4.2",
-    "pyhamcrest>=2.1.0",
-    "ruff>=0.14.2",
+    "bump-my-version>=1.5.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
 ]
