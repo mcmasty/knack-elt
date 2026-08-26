@@ -167,6 +167,9 @@ The plan is a diff, computed for a human to read. The apply is not incremental:
 3. Create the full target set
 4. All of the above in one transaction
 
+`CREATE OR REPLACE` in the SQL above is redundant after step 2 and is kept anyway: it makes each
+statement correct in isolation, which matters when one is pasted into a console to debug.
+
 This avoids an ordering hazard that incremental application has and is genuinely hard to get
 right: if object_3 is renamed to `Classes` while object_9's view is *currently* named `Classes`,
 any create-then-drop order transiently clobbers one of them. A full rebuild has no intermediate
@@ -204,6 +207,10 @@ Apply? [y/N]
 `--yes` skips the prompt for scripted use. A plan with no changes reports so and exits 0
 without prompting. Exits 1 if any view fails to build.
 
+When stdin is not a terminal and `--yes` was not given, the command prints the plan and exits 1
+without applying it. A cron job that would silently rename an analyst's views because nobody was
+there to answer is the failure mode this whole design is built to avoid.
+
 Rename attribution (`~`) comes from the view comments. If a comment is missing — a
 hand-created view, or a destination that does not support comments — that view degrades to a
 `+`/`-` pair in the display. The apply is unaffected, because a full rebuild does not need to
@@ -221,8 +228,9 @@ Label drift: 2 objects renamed since views were built
 Run `knack-elt refresh-views` to update the view layer.
 ```
 
-Read-only, no prompt, and it does not change the exit code — a drift report is information, not
-a failure. Silent when there is no drift, and silent when the `_labels` schema does not exist,
+Rename attribution here comes from the view comments, exactly as it does in the plan; without
+them the report degrades to naming the views that would be added and removed. Read-only, no
+prompt, and it does not change the exit code — a drift report is information, not a failure. Silent when there is no drift, and silent when the `_labels` schema does not exist,
 so a user who never opts into views never hears about them.
 
 ## Error handling
