@@ -4,7 +4,10 @@ Nothing here is app-specific. Names come from the catalogs in the warehouse, and
 every identifier this module emits lands in views - never in a table, a column, or
 anything a record's SCD2 history depends on.
 """
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 PASSTHROUGH_COLUMNS = ("record_id", "valid_from", "valid_to", "is_live_in_knack")
 HISTORY_SUFFIX = "_history"
@@ -189,20 +192,45 @@ def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _literal(value: str) -> str:
+    """A single-quoted SQL string. Object keys reach COMMENT ON from warehouse data,
+    and warehouse data is never trusted to be free of quotes."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _select_pairs(spec: ViewSpec, history: bool) -> list[tuple[str, str]]:
+    """(expression, output column name) for every column a view emits, in order.
+
+    `view_sql` and `expected_columns` both read this, so the SELECT list and the
+    drift comparison can never disagree about what a view is supposed to contain.
+    Two hand-maintained copies is how "already up to date" starts lying.
+    """
+    pairs = [(_quote("record_id"), "record_id")]
+    pairs += [(_quote(column), alias) for column, alias in spec.columns]
+    if history:
+        pairs += [
+            (_quote("_dlt_valid_from"), "valid_from"),
+            (_quote("_dlt_valid_to"), "valid_to"),
+            (f'{_quote("_dlt_valid_to")} IS NULL', "is_live_in_knack"),
+        ]
+    return pairs
+
+
+def expected_columns(spec: ViewSpec, *, history: bool) -> tuple[str, ...]:
+    """The column list this spec's view would have, in order."""
+    return tuple(alias for _, alias in _select_pairs(spec, history))
+
+
 def view_sql(spec: ViewSpec, data_schema: str, labels_schema: str, *, history: bool) -> str:
     """One CREATE OR REPLACE VIEW statement.
 
     OR REPLACE is redundant after the rebuild's drop pass and kept anyway, so each
     statement is correct in isolation when pasted into a console to debug.
     """
-    selected = [_quote("record_id")]
-    selected += [f"{_quote(column)} AS {_quote(alias)}" for column, alias in spec.columns]
-    if history:
-        selected += [
-            f'{_quote("_dlt_valid_from")} AS {_quote("valid_from")}',
-            f'{_quote("_dlt_valid_to")} AS {_quote("valid_to")}',
-            f'{_quote("_dlt_valid_to")} IS NULL AS {_quote("is_live_in_knack")}',
-        ]
+    selected = [
+        f"{expression} AS {_quote(alias)}"
+        for expression, alias in _select_pairs(spec, history)
+    ]
     name = spec.history_name if history else spec.view_name
     where = "" if history else f' WHERE {_quote("_dlt_valid_to")} IS NULL'
     return (
@@ -210,3 +238,178 @@ def view_sql(spec: ViewSpec, data_schema: str, labels_schema: str, *, history: b
         f"SELECT {', '.join(selected)} "
         f"FROM {_quote(data_schema)}.{_quote(spec.table_name)}{where}"
     )
+
+
+def labels_schema_name(dataset: str) -> str:
+    return f"{dataset}_labels"
+
+
+@dataclass(frozen=True)
+class LabelViewPlan:
+    labels_schema: str
+    specs: tuple
+    created: tuple
+    renamed: tuple
+    changed: tuple
+    dropped: tuple
+    skipped: tuple
+
+    def is_empty(self) -> bool:
+        """`changed` counts. A field rename moves no view name at all, so a plan that
+        ignored it would report "already up to date" over stale column aliases."""
+        return not (self.created or self.renamed or self.changed or self.dropped)
+
+    def drops_everything(self) -> bool:
+        return bool(self.dropped) and not self.specs
+
+
+def _existing_views(sql_client, labels_schema):
+    """View name -> owning object key (from its comment, or None)."""
+    rows = sql_client.execute_sql(
+        "SELECT view_name, comment FROM duckdb_views() "
+        "WHERE database_name = current_database() AND schema_name = %s",
+        labels_schema,
+    ) or []
+    return {name: comment for name, comment in rows}
+
+
+def view_columns(sql_client, labels_schema: str) -> dict[str, tuple[str, ...]]:
+    """View name -> its column names, in order.
+
+    This, not the stored SQL, is how drift is detected. DuckDB keeps a rewritten form
+    of a view's definition - `CREATE OR REPLACE` dropped, identifiers unquoted where
+    they can be, the WHERE clause parenthesized, a semicolon appended - so generated
+    SQL never equals `duckdb_views().sql` and comparing them reports drift that no
+    rebuild can ever clear. Column names come back verbatim, and a renamed field is
+    exactly a change to this list.
+
+    Restricted to views: a hand-authored table in the schema has columns too, and it
+    is not something this layer has a target column list for.
+    """
+    rows = sql_client.execute_sql(
+        "SELECT table_name, column_name FROM duckdb_columns() "
+        "WHERE database_name = current_database() AND schema_name = %s "
+        "AND table_name IN (SELECT view_name FROM duckdb_views() "
+        "WHERE database_name = current_database() AND schema_name = %s) "
+        "ORDER BY table_name, column_index",
+        labels_schema,
+        labels_schema,
+    ) or []
+    columns = {}
+    for view_name, column_name in rows:
+        columns.setdefault(view_name, []).append(column_name)
+    return {name: tuple(names) for name, names in columns.items()}
+
+
+def _column_change_reason(have: tuple, want: tuple) -> str:
+    added = [name for name in want if name not in have]
+    removed = [name for name in have if name not in want]
+    parts = []
+    if added:
+        parts.append("+" + ", ".join(repr(name) for name in added))
+    if removed:
+        parts.append("-" + ", ".join(repr(name) for name in removed))
+    return "columns " + ("; ".join(parts) if parts else "reordered")
+
+
+def plan_label_views(pipeline) -> LabelViewPlan:
+    """The target view set, diffed against what the warehouse currently holds.
+
+    Inert: computing a plan writes nothing. Drift *is* a non-empty plan, which is what
+    keeps `run-pipeline`'s report and `refresh-views` from disagreeing about what
+    counts as out of date.
+    """
+    dataset = pipeline.dataset_name
+    labels_schema = labels_schema_name(dataset)
+    with pipeline.sql_client() as sql_client:
+        objects, fields = read_catalogs(sql_client)
+        specs, skipped = build_view_specs(sql_client, objects, fields)
+        existing = _existing_views(sql_client, labels_schema)
+        existing_columns = view_columns(sql_client, labels_schema)
+
+    target, targeted_spec = {}, {}
+    for spec in specs:
+        for name, history in ((spec.view_name, False), (spec.history_name, True)):
+            target[name] = spec.object_key
+            targeted_spec[name] = (spec, history)
+
+    by_object_existing = {}
+    for name, owner in existing.items():
+        if owner:
+            by_object_existing.setdefault(owner, []).append(name)
+
+    created, renamed, changed, matched = [], [], [], set()
+    for name, owner in sorted(target.items()):
+        if name in existing:
+            matched.add(name)
+            spec, history = targeted_spec[name]
+            previous_owner = existing[name]
+            if previous_owner and previous_owner != owner:
+                # Two objects swapped labels. Every view name still exists and the
+                # column lists can be identical, so only the stamped owner shows
+                # that each view now points at the other object's table.
+                changed.append(
+                    (name, f"now built from {owner}, was {previous_owner}")
+                )
+            else:
+                want = expected_columns(spec, history=history)
+                have = existing_columns.get(name)
+                if have is not None and have != want:
+                    # Verbatim, order-sensitive: labels are compared folded so two of
+                    # them cannot collide, but `Name` -> `NAME` is a real edit a
+                    # builder made and an analyst will see.
+                    changed.append((name, _column_change_reason(have, want)))
+            continue
+
+        previous = [
+            old for old in by_object_existing.get(owner, [])
+            if old not in target
+            and old.endswith(HISTORY_SUFFIX) == name.endswith(HISTORY_SUFFIX)
+        ]
+        if previous:
+            old = sorted(previous)[0]
+            renamed.append((old, name, owner))
+            matched.add(old)
+        else:
+            created.append(name)
+
+    dropped = sorted(name for name in existing if name not in target and name not in matched)
+    return LabelViewPlan(
+        labels_schema=labels_schema,
+        specs=tuple(specs),
+        created=tuple(created),
+        renamed=tuple(renamed),
+        changed=tuple(changed),
+        dropped=tuple(dropped),
+        skipped=tuple(skipped),
+    )
+
+
+def apply_label_views(pipeline, plan: LabelViewPlan) -> int:
+    """Drop the whole layer and rebuild it, in one transaction.
+
+    Not incremental on purpose: if one object takes a name another object's view
+    currently holds, every create-then-drop order transiently clobbers one of them.
+    A rebuild has no intermediate state, and views are metadata.
+    """
+    dataset = pipeline.dataset_name
+    created = 0
+    with pipeline.sql_client() as sql_client:
+        sql_client.execute_sql(f"CREATE SCHEMA IF NOT EXISTS {_quote(plan.labels_schema)}")
+        with sql_client.begin_transaction():
+            for name in _existing_views(sql_client, plan.labels_schema):
+                sql_client.execute_sql(
+                    f"DROP VIEW {_quote(plan.labels_schema)}.{_quote(name)}"
+                )
+            for spec in plan.specs:
+                for history in (False, True):
+                    sql_client.execute_sql(view_sql(spec, dataset, plan.labels_schema,
+                                                    history=history))
+                    name = spec.history_name if history else spec.view_name
+                    sql_client.execute_sql(
+                        f"COMMENT ON VIEW {_quote(plan.labels_schema)}.{_quote(name)} "
+                        f"IS {_literal(spec.object_key)}"
+                    )
+                    created += 1
+    logger.info(f"Rebuilt {created} views in {plan.labels_schema}")
+    return created

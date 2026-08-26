@@ -1,4 +1,5 @@
 """Name generation for the label view layer. Pure functions - no warehouse."""
+import dlt
 import duckdb
 import pytest
 
@@ -7,11 +8,14 @@ from knack_elt.labels import (
     PASSTHROUGH_COLUMNS,
     LabelNameCollision,
     MissingCatalogs,
+    apply_label_views,
     assert_globally_unique,
     build_view_specs,
     column_aliases,
     fold,
+    labels_schema_name,
     object_view_names,
+    plan_label_views,
     read_catalogs,
     view_sql,
 )
@@ -263,4 +267,206 @@ def test_a_field_suffixed_off_a_passthrough_cannot_land_on_another_field(tmp_pat
     objects, fields = read_catalogs(client)
     with pytest.raises(LabelNameCollision):
         build_view_specs(client, objects, fields)
+    con.close()
+
+
+def _synced(tmp_path, objects, fields, rows, name="lv"):
+    """A dlt pipeline whose warehouse already holds catalogs and data."""
+    db = tmp_path / "t.duckdb"
+    pipeline = dlt.pipeline(pipeline_name=name, dataset_name="ds", dev_mode=False,
+                            pipelines_dir=str(tmp_path / "dlt"),
+                            destination=dlt.destinations.duckdb(str(db)))
+    for object_key, table_rows in rows.items():
+        pipeline.run(table_rows, table_name=object_key,
+                     write_disposition={"disposition": "merge", "strategy": "scd2"},
+                     primary_key="record_id")
+    pipeline.run([{"object_id": o, "object_name": n} for o, n in objects],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+    pipeline.run([{"object_id": o, "field_key": k, "field_name": n} for o, k, n in fields],
+                 table_name="_kn_field_catalog", write_disposition="replace")
+    return pipeline, db
+
+
+def _view_names(db):
+    con = duckdb.connect(str(db))
+    try:
+        return sorted(r[0] for r in con.execute(
+            "select view_name from duckdb_views() where schema_name='ds_labels'").fetchall())
+    finally:
+        con.close()
+
+
+def test_labels_schema_name_is_derived_not_guessed():
+    assert labels_schema_name("app_x_a1b2c3d4") == "app_x_a1b2c3d4_labels"
+
+
+def test_apply_creates_both_views_and_a_second_apply_is_a_no_op(tmp_path):
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_noop",
+    )
+    plan = plan_label_views(pipeline)
+    assert apply_label_views(pipeline, plan) == 2
+    first = _view_names(db)
+    assert first == ["Classes", "Classes_history"]
+
+    again = plan_label_views(pipeline)
+    assert again.is_empty(), again
+    apply_label_views(pipeline, again)
+    assert _view_names(db) == first
+
+
+def test_a_rename_is_attributed_and_the_stale_view_goes(tmp_path):
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Courses")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_rename",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+
+    plan = plan_label_views(pipeline)
+    assert ("Courses", "Classes", "object_1") in plan.renamed
+    assert ("Courses_history", "Classes_history", "object_1") in plan.renamed
+    apply_label_views(pipeline, plan)
+    assert _view_names(db) == ["Classes", "Classes_history"]
+
+
+def test_the_rebuild_never_touches_the_physical_table(tmp_path):
+    """The whole point: a label rename must leave SCD2 history byte-identical."""
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Courses")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_untouched",
+    )
+    con = duckdb.connect(str(db))
+    before = con.execute("select * from ds.object_1").fetchall()
+    con.close()
+
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+    apply_label_views(pipeline, plan_label_views(pipeline))
+
+    con = duckdb.connect(str(db))
+    assert con.execute("select * from ds.object_1").fetchall() == before
+    con.close()
+
+
+def test_a_renamed_field_is_drift_even_though_no_view_name_changes(tmp_path):
+    """The name-only blind spot: renaming a field moves no view name at all, so a
+    plan that compares names alone leaves every column alias stale forever."""
+    pipeline, _db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_field",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "field_key": "field_1",
+                   "field_name": "Full Name"}],
+                 table_name="_kn_field_catalog", write_disposition="replace")
+
+    plan = plan_label_views(pipeline)
+    assert not plan.is_empty()
+    assert plan.created == () and plan.renamed == () and plan.dropped == ()
+    assert sorted(name for name, _ in plan.changed) == ["Classes", "Classes_history"]
+    assert "Full Name" in dict(plan.changed)["Classes"]
+
+
+def test_applying_a_field_rename_updates_the_alias_and_clears_the_drift(tmp_path):
+    """A re-plan after the apply must be empty. If it is not, `refresh-views` asks
+    forever and there is no way to tell a real change from the noise."""
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_field_apply",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "field_key": "field_1",
+                   "field_name": "Full Name"}],
+                 table_name="_kn_field_catalog", write_disposition="replace")
+    apply_label_views(pipeline, plan_label_views(pipeline))
+
+    con = duckdb.connect(str(db))
+    assert [d[0] for d in con.execute('select * from ds_labels."Classes"').description] == [
+        "record_id", "Full Name"]
+    con.close()
+    assert plan_label_views(pipeline).is_empty()
+
+
+def test_a_case_only_field_rename_is_still_drift(tmp_path):
+    """Comparison of *labels* is folded so two of them cannot collide; comparison of
+    an existing view against its target is verbatim, because `NAME` is a real edit a
+    builder made and the analyst will see."""
+    pipeline, _db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_case",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "field_key": "field_1", "field_name": "NAME"}],
+                 table_name="_kn_field_catalog", write_disposition="replace")
+    assert not plan_label_views(pipeline).is_empty()
+
+
+def test_two_objects_swapping_names_applies_correctly(tmp_path):
+    """The ordering hazard a full rebuild dissolves: incremental create-then-drop
+    would transiently clobber one of these."""
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Alpha"), ("object_2", "Beta")],
+        [("object_1", "field_1", "N"), ("object_2", "field_1", "N")],
+        {"object_1": [{"record_id": "1", "field_1": "a"}],
+         "object_2": [{"record_id": "2", "field_1": "b"}]}, name="lv_swap",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "object_name": "Beta"},
+                  {"object_id": "object_2", "object_name": "Alpha"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+    apply_label_views(pipeline, plan_label_views(pipeline))
+
+    con = duckdb.connect(str(db))
+    assert con.execute('select record_id from ds_labels."Beta"').fetchone() == ("1",)
+    assert con.execute('select record_id from ds_labels."Alpha"').fetchone() == ("2",)
+    con.close()
+
+
+def test_two_objects_swapping_names_is_not_reported_as_up_to_date(tmp_path):
+    """Both view names still exist and both column lists are identical, so name and
+    column comparison alone both read "no change" while every view now points at the
+    wrong object. The stamped owner is what catches it."""
+    pipeline, _db = _synced(
+        tmp_path, [("object_1", "Alpha"), ("object_2", "Beta")],
+        [("object_1", "field_1", "N"), ("object_2", "field_1", "N")],
+        {"object_1": [{"record_id": "1", "field_1": "a"}],
+         "object_2": [{"record_id": "2", "field_1": "b"}]}, name="lv_swap_plan",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    pipeline.run([{"object_id": "object_1", "object_name": "Beta"},
+                  {"object_id": "object_2", "object_name": "Alpha"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+
+    plan = plan_label_views(pipeline)
+    assert not plan.is_empty()
+    assert sorted(name for name, _ in plan.changed) == [
+        "Alpha", "Alpha_history", "Beta", "Beta_history"]
+
+
+def test_a_hand_authored_table_blocks_the_rebuild_and_names_itself(tmp_path):
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_blocked",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    con = duckdb.connect(str(db))
+    con.execute('create table ds_labels."Classes_manual" (x varchar)')
+    con.close()
+    pipeline.run([{"object_id": "object_1", "object_name": "Classes_manual"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+    with pytest.raises(Exception) as exc:
+        apply_label_views(pipeline, plan_label_views(pipeline))
+    assert "Classes_manual" in str(exc.value)
+
+    # The transaction is the whole promise: a failed apply leaves the previous view
+    # set - and the comments a later plan reads to attribute renames - in place.
+    con = duckdb.connect(str(db))
+    assert con.execute(
+        "select view_name, comment from duckdb_views() where schema_name='ds_labels' "
+        "order by view_name").fetchall() == [
+        ("Classes", "object_1"), ("Classes_history", "object_1")]
     con.close()
