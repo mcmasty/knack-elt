@@ -109,7 +109,9 @@ def test_colliding_field_names_get_distinct_columns(collision_app):
     assert len(slugs) == len(set(slugs)), f"slug collision would drop a column: {slugs}"
     assert "" not in slugs, "an empty slug would collapse every unnameable field into one column"
     assert "id" in slugs, "a field named 'ID' should own the 'id' column now that we key on record_id"
-    assert "score" in numeric_fields, "equation fields must be numeric-cleaned"
+    # Registered by Knack field key: cleaning runs before the remap, so a slug would
+    # never match. The behavioural check (empty equation -> NULL) is in the load test.
+    assert "field_9" in numeric_fields, "equation fields must be numeric-cleaned"
 
 
 def test_records_survive_the_remap(collision_app, tmp_path):

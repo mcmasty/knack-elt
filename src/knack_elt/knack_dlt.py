@@ -3,9 +3,7 @@
 Nothing in this module is app-specific: every name, object key, and credential is
 passed in by the caller (see `cli.py`).
 """
-import json
 import logging
-from collections.abc import Iterable
 
 import dlt
 from dlt.common.normalizers.naming.snake_case import NamingConvention
@@ -16,7 +14,6 @@ from knack_sleuth import Application
 
 from .mapping import create_app_mappings, remap_keys
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Columns the pipeline stamps onto every row for lineage. Underscore-prefixed so a
@@ -98,7 +95,7 @@ def create_rest_client(app_id: str, api_key: str) -> RESTClient:
     )
 
 
-def get_knack_table_data(table_name, object_id, client, json_fields=(), skip_unreadable=False):
+def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
     @dlt.resource(name=f"table_{object_id}",
                   write_disposition={"disposition": "merge", "strategy": "scd2"},
                   primary_key=RECORD_KEY,
@@ -114,7 +111,10 @@ def get_knack_table_data(table_name, object_id, client, json_fields=(), skip_unr
                 logger.debug(f"Fetched {len(page)} records from {table_name}")
                 for row in page:
                     if row.get('id') is None:
-                        logger.warning(f"Missing Primary Key in table {table_name}: {row}")
+                        logger.warning(
+                            f"Skipping a record with no id in {table_name}; "
+                            f"its fields were {sorted(row)}"
+                        )
                         continue
                     # Rename before anything else so the merge key is set even if a
                     # user-defined field also wants the "id" column. This mutates the
@@ -124,7 +124,6 @@ def get_knack_table_data(table_name, object_id, client, json_fields=(), skip_unr
                     row[LINEAGE_TABLE_NAME] = table_name
                     row[LINEAGE_OBJECT_ID] = object_id
 
-                    row = clean_json_fields(row, json_fields)
                     yielded += 1
                     yield row
         except Exception as e:
@@ -142,10 +141,15 @@ def get_knack_table_data(table_name, object_id, client, json_fields=(), skip_unr
 
 
 def clean_empty_strings(row, numeric_fields):
-    """Converts empty strings to None for specified numeric fields."""
-    for field in numeric_fields:
-        if field in row and row[field] == "":
-            row[field] = None
+    """Empty string -> None for numeric-ish fields, so the column does not type as text.
+
+    Runs before the remap, so it matches raw Knack field keys. Iterating the row and
+    testing membership keeps this O(row) rather than a scan of every field in the app,
+    per row.
+    """
+    for key, value in row.items():
+        if value == "" and key in numeric_fields:
+            row[key] = None
     return row
 
 
@@ -154,27 +158,6 @@ def assign_default_values(row, default_values):
     for fk in row:
         if fk in default_values and (row[fk] is None or row[fk] == ""):
             row[fk] = default_values[fk]
-    return row
-
-
-def clean_json_fields(row, json_fields: Iterable[str] = ()):
-    """Ensure JSON-in-string fields are valid, or convert empty/invalid JSON to None.
-
-    Knack's `format=raw` returns rich fields (file, image, connection) as dicts, not
-    JSON strings, so non-string values are left untouched.
-    """
-    for field in json_fields:
-        if field in row:
-            value = row[field]
-            if not isinstance(value, str):
-                continue
-            if value.strip() == "":
-                row[field] = None  # Replace empty JSON with None
-            else:
-                try:
-                    json.loads(value)  # Validate JSON
-                except json.JSONDecodeError:
-                    row[field] = None  # Replace invalid JSON with None
     return row
 
 

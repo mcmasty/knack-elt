@@ -98,6 +98,10 @@ previously ended up pointing at different apps.
   named for (three AV/E objects rely on this). Knack auto-adds a `short_text` "Record ID" field
   to every object, which slugifies onto the merge key, so it is renamed `<singular>_record_id`.
   Reservation compares the **slug**, not the raw name — `"Record ID".lower()` is `"record id"`.
+- `column_name_for_field()` resolves every column name. Every fallback is **re-checked**, not
+  trusted: the reserved-name escape (`<singular>_record_id`) can slugify straight back to
+  `record_id` when the singular has no ASCII alphanumerics, and the collision escape
+  (`{slug}_{field_key}`) is a name a field can already hold.
 - `NUMERIC_FIELD_TYPES` drives empty-string→NULL cleaning: `number`, `currency`, `link`,
   `date_time`, `auto_increment`, `count`, `sum`, `min`, `max`, `average`, `equation`, `rating`.
   Omitting a type means that column types as VARCHAR full of `''` — add new types here.
@@ -112,12 +116,17 @@ previously ended up pointing at different apps.
 both resource and transformer. `columns={RECORD_KEY: {"merge_key": False}}` works around a suspected
 dlt bug.
 
-**Cleaning order**: cleaning runs **before** the remap, so it matches raw Knack field keys.
-`numeric_fields`/`default_values` are also registered under the slug and raw name; those entries
-are never reached. Harmless, but don't go looking for a second pass.
+**Cleaning order**: cleaning runs **before** the remap, so `numeric_fields` and `default_values`
+are keyed on raw Knack field keys *only*. Do not re-register them under the slug or raw name —
+those entries can never match a row. There is deliberately no JSON-string cleaning: `format=raw`
+returns rich fields as dicts and `max_table_nesting=0` leaves dlt to serialise them.
 
-**Duplicate object names**: destination table names are deduped by appending the object key, since
-Knack object names are not guaranteed unique but object keys are.
+**Duplicate table names**: `destination_table_name()` dedupes on the name **dlt will actually
+create**, not the raw Knack object name — dlt snake_cases it afterwards, so `Order Items` and
+`order-items` both become `order_items`, and any name without ASCII alphanumerics becomes `x`.
+A shared table is not cosmetic: each run's SCD2 merge retires the other object's rows as
+deleted-in-Knack. It falls back to the object key, and rejects names that normalize to empty
+or to a leading underscore (dlt owns that prefix).
 
 ### SCD2 — two traps
 
