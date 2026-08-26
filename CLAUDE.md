@@ -140,8 +140,14 @@ or to a leading underscore (dlt owns that prefix).
    occur *before any row is yielded*; a mid-stream failure always re-raises. Preserve that
    invariant in any error-handling change.
 
-Known gap: an object that returns zero records produces no load package at all, so previously
-loaded rows stay marked live. Emptying an object in Knack is invisible to the flag.
+Known gaps, both documented in the README, neither cheaply fixable:
+- An object returning zero records produces no load package at all, so previously loaded rows
+  stay marked live. Emptying an object in Knack is invisible to the flag.
+- Knack's record API pages by number, not cursor, so a record inserted or deleted mid-extraction
+  shifts page boundaries and can be missed from that batch, then retired as deleted. The *live*
+  flag self-corrects on the next run; the spurious retire/re-add pair stays in the history, so
+  point-in-time queries over that window are wrong. A `sort_field`/`sort_order` on a stable field
+  would narrow the window but not close it.
 
 ## Testing
 

@@ -201,10 +201,26 @@ A record deleted in Knack survives only as a *retired* row, so filtering on
 And aggregating without `latest_version` double-counts, because every past version is still a
 row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works through both.
 
-> **One caveat on `is_live_in_knack`.** If an object returns *zero* records, dlt has nothing to
+> **Two caveats on `is_live_in_knack`.**
+>
+> **An emptied object stays "live".** If an object returns *zero* records, dlt has nothing to
 > load for that table and the merge never runs, so rows loaded earlier keep `_dlt_valid_to is
 > null` and still read as live. Emptying an object in Knack is therefore invisible to the flag —
 > a table whose row count stops moving is worth checking against the app.
+>
+> **Edits during a sync can cause a one-run false retirement.** Knack's record API pages by
+> number, not by cursor, so a record inserted or deleted in Knack *while a multi-page extraction
+> is running* shifts the page boundaries under it. A record that slides across a boundary is
+> missed from that batch, and the merge retires it as though it were deleted.
+>
+> This mostly self-corrects: the next run sees the record again and re-adds it, so
+> `latest_version and is_live_in_knack` is right again within a day. What does *not* correct is
+> the history — the spurious retirement and re-add stay in the table permanently, so a
+> point-in-time query (`_dlt_valid_from <= d and (_dlt_valid_to is null or _dlt_valid_to > d)`)
+> over that window reports the record as deleted when it never was. For a record to look
+> *durably* gone it would have to be missed the same way on consecutive runs, which is unlikely;
+> for its timeline to have a spurious gap, once is enough. The window is proportional to how long
+> a large object takes to page, so it is widest on the biggest tables.
 
 ## Documentation
 
