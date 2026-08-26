@@ -79,18 +79,63 @@ four — MotherDuck, dbt and Preset, orchestrated by a daily GitHub Actions job 
   edit retires the old row and appends a new one. Tables are kept flat
   (`max_table_nesting=0`) — one table per Knack object, no nested child tables.
 
-## Quick start
+## Install
 
-Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/).
+Requires **Python 3.13+**. Published on PyPI as
+[`knack-elt`](https://pypi.org/project/knack-elt/). Pick whichever fits:
+
+### Run it without installing
+
+[uv](https://docs.astral.sh/uv/) fetches the package into a throwaway environment, so this
+leaves nothing behind — the quickest way to point it at an app and see what comes out:
 
 ```bash
-uv sync
+uvx --from knack-elt knack-elt run-pipeline --app-id your_app_id
+```
 
+### Install the CLI
+
+For repeated use, install it as a standalone tool. `uv tool` and `pipx` both keep it in its
+own environment rather than in your project or system site-packages:
+
+```bash
+uv tool install knack-elt      # or: pipx install knack-elt
+knack-elt --version
+```
+
+Plain `pip` works too, though prefer a virtualenv over a system-wide install:
+
+```bash
+python -m pip install knack-elt
+```
+
+### Clone for development
+
+Use this if you intend to change the code. `uv sync` builds the environment from the
+lockfile, so you get the exact dependency versions CI tests against:
+
+```bash
+git clone https://github.com/mcmasty/knack-elt.git
+cd knack-elt
+uv sync
+uv run knack-elt --version
+uv run pytest tests/ -q      # offline: no Knack or MotherDuck credentials needed
+```
+
+In a clone, prefix the commands below with `uv run`. Installed via any of the other routes,
+call `knack-elt` directly.
+
+## Quick start
+
+```bash
 export KNACK_APP_ID=your_app_id
 export KNACK_API_KEY=your_rest_api_key
 
-uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID"
+knack-elt run-pipeline --app-id "$KNACK_APP_ID"
 ```
+
+Your Knack REST API key comes from the Knack builder under **Settings → API & Code**. The
+pipeline only ever reads.
 
 Names are derived from your app's slug, so a second app never lands on the first one's tables:
 database `knack_{slug}_data`, dataset `{slug}`, pipeline `knack_{slug}_pipeline`.
@@ -98,13 +143,15 @@ database `knack_{slug}_data`, dataset `{slug}`, pipeline `knack_{slug}_pipeline`
 ### Destinations
 
 `--destination local` (the default) writes a DuckDB file — nothing to sign up for, so a fresh
-clone can be pointed at a Knack app and produce a queryable warehouse immediately. The file
-lands at `./tests/data/knack_{slug}_data.duckdb` unless you pass `--db-path`; the resolved
-path is printed on every run.
+install can be pointed at a Knack app and produce a queryable warehouse immediately.
+
+The default location is `./tests/data/knack_{slug}_data.duckdb`, **relative to wherever you run
+the command**. That suits a clone and suits nothing else, so pass `--db-path` when you have
+installed the CLI. The resolved absolute path is printed on every run.
 
 ```bash
-uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID" --db-path ~/knack.duckdb
-uv run knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
+knack-elt run-pipeline --app-id "$KNACK_APP_ID" --db-path ~/knack.duckdb
+knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
 ```
 
 `--destination motherduck` loads to `md:///knack_{slug}_data` and needs `motherduck_api_key`

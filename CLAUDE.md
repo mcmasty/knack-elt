@@ -22,7 +22,9 @@ uv run ruff check src/ tests/
 
 ### Running the Pipeline
 
-Packaged as a Typer CLI (`[project.scripts]` → `knack_elt.cli:cli`):
+Packaged as a Typer CLI (`[project.scripts]` → `knack_elt.cli:cli`) and published on PyPI as
+`knack-elt`. In this repo, work through `uv run`; the README documents the uvx/pip/clone
+routes for users.
 
 ```bash
 uv run knack-elt run-pipeline --app-id <knack_app_id>                    # local DuckDB file
