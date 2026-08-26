@@ -82,12 +82,13 @@ No Knack dependency; it reads the warehouse and writes views.
 
 ```python
 def plan_label_views(pipeline) -> LabelViewPlan
-def apply_label_views(pipeline, plan: LabelViewPlan) -> LabelViewReport
-def describe_drift(pipeline) -> DriftReport
+def apply_label_views(pipeline, plan: LabelViewPlan) -> int   # views created
 ```
 
 `LabelViewPlan` holds the target view set plus the diff against what currently exists:
-created, renamed, dropped, and skipped. It is inert — computing a plan writes nothing.
+created, renamed, changed, dropped, and skipped. It is inert — computing a plan writes nothing.
+There is no separate drift type: drift *is* a non-empty plan, which is what keeps the two from
+disagreeing about what counts as out of date.
 
 ### View shape
 
@@ -277,9 +278,15 @@ and reports if the plan is non-empty.
 It must call the planner rather than deriving names from the catalog directly, for two reasons.
 First, a name-only comparison misses **field** renames entirely: renaming a field changes a
 column alias inside a view's SQL, not any view name, so a warehouse could sit indefinitely with
-every column stale while the drift check reports nothing. The plan compares generated SQL
-against `duckdb_views().sql`, so a field rename, a newly-populated field, and an object rename
-all surface. Second, the planner's skip rules (no physical table, no physical column) must apply
+every column stale while the drift check reports nothing. The plan therefore compares each
+existing view's **column list** against the aliases the catalog now implies, so a field rename,
+a newly-populated field, and an object rename all surface.
+
+Comparing SQL text does not work, and was the first attempt: DuckDB stores a rewritten form of
+a view's definition — `CREATE OR REPLACE` dropped, identifiers unquoted where they can be, the
+`WHERE` clause parenthesized, a trailing semicolon added — so generated SQL never equals
+`duckdb_views().sql` and every run would report drift that no rebuild can clear. Column lists
+come back verbatim from `duckdb_columns()`, and they are what a rename actually changes. Second, the planner's skip rules (no physical table, no physical column) must apply
 here too — otherwise a catalog-only object implies a view that will never exist, and the check
 reports phantom drift on every run with no way to clear it.
 

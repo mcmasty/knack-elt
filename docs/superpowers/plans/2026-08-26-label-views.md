@@ -577,7 +577,15 @@ git commit -m "Read the label catalogs and generate view SQL"
 **Interfaces:**
 - Consumes: everything from Tasks 1 and 2.
 - Produces:
-  - `@dataclass(frozen=True) class LabelViewPlan` with `labels_schema: str`, `specs: tuple[ViewSpec, ...]`, `created: tuple[str, ...]`, `renamed: tuple[tuple[str, str, str], ...]` (old, new, object_key), `dropped: tuple[str, ...]`, `skipped: tuple[tuple[str, str], ...]`, and methods `is_empty() -> bool`, `drops_everything() -> bool`
+  - `@dataclass(frozen=True) class LabelViewPlan` with `labels_schema: str`, `specs: tuple[ViewSpec, ...]`, `created: tuple[str, ...]`, `renamed: tuple[tuple[str, str, str], ...]` (old, new, object_key), `changed: tuple[tuple[str, str], ...]` (view_name, reason), `dropped: tuple[str, ...]`, `skipped: tuple[tuple[str, str], ...]`, and methods `is_empty() -> bool`, `drops_everything() -> bool`
+  - `def view_columns(sql_client, labels_schema: str) -> dict[str, tuple[str, ...]]` — view name → its column names, in order
+
+**Drift is detected by column list, not by SQL text.** DuckDB stores a rewritten form of a
+view's definition (`CREATE OR REPLACE` dropped, identifiers unquoted where possible, `WHERE`
+parenthesized, `;` appended), so comparing generated SQL to `duckdb_views().sql` never matches
+and reports drift forever. `duckdb_columns()` returns the column list verbatim, and a field
+rename is exactly a change to that list. `is_empty()` must include `changed`, or a field rename
+leaves `refresh-views` reporting "already up to date" while every column alias is stale.
   - `def labels_schema_name(dataset: str) -> str` — returns `f"{dataset}_labels"`
   - `def plan_label_views(pipeline) -> LabelViewPlan`
   - `def apply_label_views(pipeline, plan: LabelViewPlan) -> int` — returns the number of views created
