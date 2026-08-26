@@ -470,3 +470,57 @@ def test_a_hand_authored_table_blocks_the_rebuild_and_names_itself(tmp_path):
         "order by view_name").fetchall() == [
         ("Classes", "object_1"), ("Classes_history", "object_1")]
     con.close()
+
+
+def test_an_object_removed_from_the_catalog_has_its_views_dropped(tmp_path):
+    """The physical table stays - that is the point of the stable-identity design -
+    but nothing in the label layer should still advertise an object Knack no longer
+    reports."""
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Classes"), ("object_2", "Old Thing")],
+        [("object_1", "field_1", "Name"), ("object_2", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}],
+         "object_2": [{"record_id": "2", "field_1": "Gone"}]}, name="lv_dropped",
+    )
+    apply_label_views(pipeline, plan_label_views(pipeline))
+    assert _view_names(db) == ["Classes", "Classes_history", "Old Thing",
+                               "Old Thing_history"]
+    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+                 table_name="_kn_object_catalog", write_disposition="replace")
+
+    plan = plan_label_views(pipeline)
+    assert plan.dropped == ("Old Thing", "Old Thing_history")
+    assert plan.created == () and plan.renamed == () and plan.changed == ()
+    assert not plan.is_empty()
+    assert not plan.drops_everything()
+
+    apply_label_views(pipeline, plan)
+    assert _view_names(db) == ["Classes", "Classes_history"]
+    assert plan_label_views(pipeline).is_empty()
+
+    con = duckdb.connect(str(db))
+    assert con.execute("select count(*) from ds.object_2").fetchone() == (1,)
+    con.close()
+
+
+def test_a_comment_less_view_degrades_to_a_created_dropped_pair(tmp_path):
+    """Rename attribution rides entirely on the view comments. A hand-created view,
+    or a destination that drops comments, must still plan - as a `+`/`-` pair, since
+    a full rebuild never needs to know what anything used to be called."""
+    pipeline, db = _synced(
+        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Physics"}]}, name="lv_nocomment",
+    )
+    con = duckdb.connect(str(db))
+    con.execute("create schema ds_labels")
+    con.execute('create view ds_labels."Courses" as select record_id from ds.object_1')
+    con.close()
+
+    plan = plan_label_views(pipeline)
+    assert plan.renamed == ()
+    assert plan.created == ("Classes", "Classes_history")
+    assert plan.dropped == ("Courses",)
+
+    apply_label_views(pipeline, plan)
+    assert _view_names(db) == ["Classes", "Classes_history"]
+    assert plan_label_views(pipeline).is_empty()
