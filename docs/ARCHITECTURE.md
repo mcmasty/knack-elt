@@ -314,7 +314,7 @@ sequenceDiagram
 
 | `--destination` | Target | Requires |
 |---|---|---|
-| `local` (default) | a DuckDB file at `./tests/data/knack_{slug}_data.duckdb`, or wherever `--db-path` points | nothing — this is the zero-setup path, so a fresh clone can load a Knack app straight away |
+| `local` (default) | a DuckDB file at `$XDG_DATA_HOME/knack-elt/knack_{slug}_data.duckdb` (falling back to `~/.local/share/knack-elt/`), or wherever `--db-path` points. Deliberately not working-directory relative — one app, one warehouse, wherever the command runs | nothing — this is the zero-setup path, so a fresh install can load a Knack app straight away |
 | `motherduck` | `md:///knack_{slug}_data` | `motherduck_api_key` in the environment or `.env` |
 
 Either way the run sets `load.workers = 3` and `truncate_staging_dataset = True`, and

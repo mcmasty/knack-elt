@@ -145,9 +145,11 @@ database `knack_{slug}_data`, dataset `{slug}`, pipeline `knack_{slug}_pipeline`
 `--destination local` (the default) writes a DuckDB file — nothing to sign up for, so a fresh
 install can be pointed at a Knack app and produce a queryable warehouse immediately.
 
-The default location is `./tests/data/knack_{slug}_data.duckdb`, **relative to wherever you run
-the command**. That suits a clone and suits nothing else, so pass `--db-path` when you have
-installed the CLI. The resolved absolute path is printed on every run.
+The file goes to `$XDG_DATA_HOME/knack-elt/knack_{slug}_data.duckdb`, falling back to
+`~/.local/share/knack-elt/`. That location is deliberately **not** relative to the working
+directory: the same app must keep one warehouse wherever you run the command, or a record's
+SCD2 history silently splits across directories. Pass `--db-path` to put it somewhere else.
+The resolved absolute path is printed on every run.
 
 ```bash
 knack-elt run-pipeline --app-id "$KNACK_APP_ID" --db-path ~/knack.duckdb
