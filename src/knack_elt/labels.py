@@ -4,6 +4,7 @@ Nothing here is app-specific. Names come from the catalogs in the warehouse, and
 every identifier this module emits lands in views - never in a table, a column, or
 anything a record's SCD2 history depends on.
 """
+from dataclasses import dataclass
 
 PASSTHROUGH_COLUMNS = ("record_id", "valid_from", "valid_to", "is_live_in_knack")
 HISTORY_SUFFIX = "_history"
@@ -76,3 +77,125 @@ def assert_globally_unique(names: list[tuple[str, str]]) -> None:
                 f"replace the other. Rename one of them in Knack."
             )
         seen[key] = owner
+
+
+OBJECT_CATALOG = "_kn_object_catalog"
+FIELD_CATALOG = "_kn_field_catalog"
+
+
+class MissingCatalogs(Exception):
+    """The warehouse has no label catalogs to build views from."""
+
+
+@dataclass(frozen=True)
+class ViewSpec:
+    object_key: str
+    table_name: str
+    view_name: str
+    history_name: str
+    columns: tuple[tuple[str, str], ...]
+    omitted_fields: tuple[str, ...]
+
+
+def read_catalogs(sql_client):
+    """Current labels, straight out of the warehouse - no Knack call, no API key."""
+    try:
+        object_rows = sql_client.execute_sql(
+            f"SELECT object_id, object_name FROM "
+            f"{sql_client.make_qualified_table_name(OBJECT_CATALOG)} ORDER BY object_id"
+        )
+        field_rows = sql_client.execute_sql(
+            f"SELECT object_id, field_key, field_name FROM "
+            f"{sql_client.make_qualified_table_name(FIELD_CATALOG)} "
+            f"ORDER BY object_id, field_key"
+        )
+    except Exception as e:
+        raise MissingCatalogs(
+            f"No label catalogs in {sql_client.fully_qualified_dataset_name()}. "
+            f"Run `knack-elt run-pipeline` against this warehouse first, or check that "
+            f"--db-path points where you think it does. Refusing to treat a warehouse "
+            f"with no catalogs as an app with no objects."
+        ) from e
+
+    fields = {}
+    for object_id, field_key, field_name in field_rows:
+        fields.setdefault(object_id, []).append((field_key, field_name))
+    return [(o, n) for o, n in object_rows], fields
+
+
+def physical_columns(sql_client, table_name: str) -> set[str]:
+    rows = sql_client.execute_sql(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s",
+        sql_client.fully_qualified_dataset_name().strip('"'),
+        table_name,
+    )
+    return {name for (name,) in rows}
+
+
+def build_view_specs(sql_client, objects, fields_by_object):
+    """Turn catalog rows into buildable view definitions.
+
+    Catalog fields with no physical column are dropped from the view and recorded;
+    dlt creates a column only once a value has arrived, and naming one that does not
+    exist would fail the whole view rather than one field.
+    """
+    view_names = object_view_names(objects)
+    specs, skipped = [], []
+    for object_key, _label in objects:
+        present = physical_columns(sql_client, object_key)
+        if not present:
+            skipped.append((object_key, "no physical table"))
+            continue
+        catalog_fields = fields_by_object.get(object_key, [])
+        aliases = column_aliases(catalog_fields)
+        columns = tuple(
+            (field_key, aliases[field_key])
+            for field_key, _ in catalog_fields
+            if field_key in present
+        )
+        omitted = tuple(
+            field_key for field_key, _ in catalog_fields if field_key not in present
+        )
+        base = view_names[object_key]
+        specs.append(ViewSpec(
+            object_key=object_key,
+            table_name=object_key,
+            view_name=base,
+            history_name=base + HISTORY_SUFFIX,
+            columns=columns,
+            omitted_fields=omitted,
+        ))
+
+    assert_globally_unique(
+        [(spec.view_name, spec.object_key) for spec in specs]
+        + [(spec.history_name, spec.object_key) for spec in specs]
+    )
+    return specs, skipped
+
+
+def _quote(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def view_sql(spec: ViewSpec, data_schema: str, labels_schema: str, *, history: bool) -> str:
+    """One CREATE OR REPLACE VIEW statement.
+
+    OR REPLACE is redundant after the rebuild's drop pass and kept anyway, so each
+    statement is correct in isolation when pasted into a console to debug.
+    """
+    selected = [_quote("record_id")]
+    selected += [f"{_quote(column)} AS {_quote(alias)}" for column, alias in spec.columns]
+    if history:
+        selected += [
+            f'{_quote("_dlt_valid_from")} AS {_quote("valid_from")}',
+            f'{_quote("_dlt_valid_to")} AS {_quote("valid_to")}',
+            f'{_quote("_dlt_valid_to")} IS NULL AS {_quote("is_live_in_knack")}',
+        ]
+    name = spec.history_name if history else spec.view_name
+    where = "" if history else f' WHERE {_quote("_dlt_valid_to")} IS NULL'
+    return (
+        f"CREATE OR REPLACE VIEW {_quote(labels_schema)}.{_quote(name)} AS "
+        f"SELECT {', '.join(selected)} "
+        f"FROM {_quote(data_schema)}.{_quote(spec.table_name)}{where}"
+    )
