@@ -219,7 +219,7 @@ flowchart TB
         norm["normalize<br/>max_table_nesting=0 → flat tables"]
         merge["merge, strategy = scd2<br/>primary_key = record_id"]
         dest[("destination<br/>DuckDB or MotherDuck")]
-        rec["reconcile confirmed-empty,<br/>removed + legacy-named objects"]
+        rec["reconcile confirmed-empty<br/>+ removed objects"]
         info["load_info + trace + label catalogs"]
         norm --> merge --> dest --> rec --> info
     end

@@ -46,6 +46,17 @@ def stable_app_identifier(app_id: str) -> str:
     return f"app_{readable}_{digest}"
 
 
+def legacy_db_path(slug: str, directory: Path) -> Path:
+    """Where releases before stable identities put this app's local warehouse.
+
+    Naming moved from the editable slug to `stable_app_identifier()`, which starts a
+    new physical namespace on purpose - the old file is not migrated, and nothing in
+    the new pipeline can see it. Point at it so an upgrade does not look like data
+    loss.
+    """
+    return directory / f"knack_{slug.replace('-', '_')}_data.duckdb"
+
+
 def schema_catalog_rows(kn_app):
     """Current human-readable labels for the stable physical object/field keys."""
     objects = [
@@ -163,6 +174,14 @@ def run_pipeline(
         local_db_path.parent.mkdir(parents=True, exist_ok=True)
         dlt_destination = dlt.destinations.duckdb(str(local_db_path))
         destination_label = str(local_db_path)
+        legacy_path = legacy_db_path(kn_app.slug, local_db_path.parent)
+        if legacy_path != local_db_path and legacy_path.exists():
+            console.print(
+                f"[bold yellow]Note:[/bold yellow] a slug-named warehouse from an earlier "
+                f"release is still at {legacy_path}. Physical names now derive from the "
+                f"immutable app id, so this run starts a fresh history at {local_db_path} "
+                f"and leaves the old file untouched."
+            )
     else:
         local_db_path = None
         dlt_destination = dlt.destinations.motherduck(

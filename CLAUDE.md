@@ -125,7 +125,9 @@ Duplicate, renamed and non-Latin labels cannot change or collide with physical t
    row is yielded; authentication, rate-limit, network, server and mid-stream failures re-raise.
 
 After a successful load, `reconcile_scd2_tables()` explicitly closes live rows for objects that
-reported zero records, disappeared from metadata, or remain in a legacy label-named table.
+reported zero records or disappeared from metadata. It is scoped to the pipeline's own
+dataset; label-named tables from older releases live in another database entirely and are
+left alone.
 
 Known source limitation, documented in the README:
 - Knack's record API pages by number, not cursor, so a record inserted or deleted mid-extraction

@@ -165,7 +165,9 @@ knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
 > **Naming migration:** older releases derived databases, datasets, tables and columns from
 > editable labels. Stable key-based naming intentionally starts a new physical namespace.
 > Preserve an existing warehouse and migrate its history deliberately; do not delete the old
-> DuckDB file or MotherDuck database after upgrading.
+> DuckDB file or MotherDuck database after upgrading. On a local run, the CLI prints a
+> note when a slug-named warehouse from an earlier release is still sitting beside the
+> new one.
 
 ### Other flags
 

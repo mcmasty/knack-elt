@@ -7,6 +7,7 @@ import logging
 
 import dlt
 import httpx
+import requests
 from dlt.common.normalizers.naming.snake_case import NamingConvention
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import APIKeyAuth
@@ -81,14 +82,23 @@ def destination_table_name(object_name: str, object_key: str, seen: dict) -> str
     return object_key
 
 
+# dlt's RESTClient is requests-based, so a forbidden page raises requests' HTTPError.
+# httpx is matched too because the client is injected by the caller and knack-sleuth
+# uses httpx; getting this tuple wrong turns --skip-unreadable into a no-op.
+_HTTP_STATUS_ERRORS = (requests.exceptions.HTTPError, httpx.HTTPStatusError)
+
+
 def _is_forbidden_error(error: Exception) -> bool:
     """Whether an exception chain contains an HTTP 403 response."""
     seen = set()
     current = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, httpx.HTTPStatusError):
-            return current.response.status_code == 403
+        if isinstance(current, _HTTP_STATUS_ERRORS):
+            # requests attaches no response when the failure was not a real reply.
+            response = getattr(current, "response", None)
+            if response is not None:
+                return response.status_code == 403
         current = current.__cause__ or current.__context__
     return False
 
@@ -276,16 +286,17 @@ def build_knack_resources(
 
 
 def reconcile_scd2_tables(pipeline, kn_app: Application, extraction_status: dict) -> list[str]:
-    """Retire live rows for confirmed-empty, removed, or legacy-named objects.
+    """Retire live rows for objects Knack confirmed empty or dropped from metadata.
 
     dlt creates no load job for an empty resource, so its normal SCD2 merge cannot
     retire the rows already present. Objects removed from metadata have no resource
     at all. Reconcile only after the extraction/load succeeds, and only treat an
     object as empty when Knack explicitly reported zero records.
 
-    Tables created by older knack-elt releases used mutable object labels. Their
-    lineage column lets us close any still-live rows once the stable object-key table
-    is in use, avoiding two simultaneously-live copies after an upgrade or rename.
+    Deliberately scoped to this pipeline's own dataset. Tables from releases that
+    named tables after mutable labels live in a different database and dataset (see
+    the README migration note); they are unreachable from here and are left alone
+    rather than guessed at.
     """
     current_tables = {obj.key: destination_table_name(obj.name, obj.key, {}) for obj in kn_app.objects}
     retired = []
@@ -308,6 +319,15 @@ def reconcile_scd2_tables(pipeline, kn_app: Application, extraction_status: dict
             ) or []
 
             for (object_id,) in object_rows:
+                if object_id is None:
+                    # `= NULL` matches nothing in SQL, so retiring these would log an
+                    # action that never happened. Unattributable rows are left live.
+                    logger.warning(
+                        f"Live rows in {table_name} carry no {LINEAGE_OBJECT_ID}; "
+                        f"leaving them open because they cannot be attributed."
+                    )
+                    continue
+
                 status = extraction_status.get(object_id, {})
                 confirmed_empty = (
                     status.get("completed")
@@ -316,8 +336,7 @@ def reconcile_scd2_tables(pipeline, kn_app: Application, extraction_status: dict
                     and all(total == 0 for total in status["totals"])
                 )
                 removed_object = object_id not in current_tables
-                legacy_table = object_id in current_tables and table_name != current_tables[object_id]
-                if not (confirmed_empty or removed_object or legacy_table):
+                if not (confirmed_empty or removed_object):
                     continue
 
                 client.execute_sql(
@@ -325,12 +344,7 @@ def reconcile_scd2_tables(pipeline, kn_app: Application, extraction_status: dict
                     f"WHERE {valid_to_column} IS NULL AND {object_column} = %s",
                     object_id,
                 )
-                if confirmed_empty:
-                    reason = "confirmed empty"
-                elif removed_object:
-                    reason = "removed from metadata"
-                else:
-                    reason = f"migrated to stable table {current_tables[object_id]}"
+                reason = "confirmed empty" if confirmed_empty else "removed from metadata"
                 message = f"Retired live rows for {object_id} in {table_name}: {reason}"
                 logger.warning(message)
                 retired.append(message)

@@ -6,8 +6,8 @@ fetching goes through `FakeClient`. They exist to prove the pipeline is app-agno
 """
 import dlt
 import duckdb
-import httpx
 import pytest
+import requests
 from dlt.pipeline.exceptions import PipelineStepFailed
 from knack_sleuth.models import KnackAppMetadata
 
@@ -49,10 +49,14 @@ class FakeClient:
     def paginate(self, url, params=None):
         object_key = url.split("/")[2]
         if object_key in self.unreadable:
-            request = httpx.Request("GET", f"https://api.knack.test{url}")
-            response = httpx.Response(403, request=request)
-            raise httpx.HTTPStatusError(
-                f"403 Forbidden for {object_key}", request=request, response=response
+            # dlt's RESTClient is requests-based and raises requests' HTTPError from
+            # its raise_for_status hook. Raising anything else here would let a
+            # forbidden-detection bug pass the suite.
+            response = requests.Response()
+            response.status_code = 403
+            response.url = f"https://api.knack.test{url}"
+            raise requests.exceptions.HTTPError(
+                f"403 Forbidden for {object_key}", response=response
             )
         yield self.pages.get(object_key, [])
 
@@ -361,6 +365,8 @@ def test_colliding_objects_do_not_retire_each_others_rows(tmp_path):
 
 
 def test_record_id_label_never_claims_the_merge_key():
+    """Tripwire, not behavior: under identity mapping this holds trivially. It fails
+    the moment anyone reintroduces label-derived column names."""
     app = make_app([make_object("object_1", "顧客", [
         ("field_1", "Record ID", "short_text"),
         ("field_2", "Name", "short_text"),
@@ -373,6 +379,7 @@ def test_record_id_label_never_claims_the_merge_key():
 
 
 def test_colliding_labels_keep_distinct_stable_columns():
+    """Tripwire, not behavior - see the note on the test above."""
     app = make_app([make_object("object_1", "Invoices", [
         ("field_1", "Total ($)", "currency"),
         ("field_2", "Total (%)", "number"),
@@ -570,33 +577,81 @@ def test_object_and_field_renames_keep_one_physical_identity(tmp_path):
     con.close()
 
 
-def test_legacy_label_named_table_is_retired_after_stable_table_load(tmp_path):
+def test_zero_rows_without_a_reported_total_does_not_retire(tmp_path):
+    """Reconciliation fails open: an empty page Knack never counted is not proof the
+    object is empty, and retiring on it would delete history on a source hiccup."""
     app = _one_object_app()
     db = tmp_path / "t.duckdb"
-    pipeline = dlt.pipeline(pipeline_name="test_legacy_name", dataset_name="fresh_app",
+    pipeline = dlt.pipeline(pipeline_name="test_fail_open", dataset_name="fresh_app",
                             dev_mode=False, destination=dlt.destinations.duckdb(str(db)))
-    pipeline.run(
-        [{
-            "record_id": "1",
-            "field_1": "old",
-            "_kn_table_name": "A",
-            "_kn_object_id": "object_1",
-        }],
-        table_name="A",
-        write_disposition={"disposition": "merge", "strategy": "scd2"},
-        primary_key="record_id",
-    )
+    client = ScriptedClient([
+        [{"id": "1", "field_1": "here"}],
+        [],  # no envelope, so no total_records - the count is unknown, not zero
+    ])
+    status = {}
+    pipeline.run(build_knack_resources(app, client, extraction_status=status))
+    reconcile_scd2_tables(pipeline, app, status)
 
+    client.advance()
+    status = {}
+    pipeline.run(build_knack_resources(app, client, extraction_status=status))
+    assert status["object_1"] == {
+        "completed": True, "skipped": False, "yielded": 0, "totals": []
+    }
+    assert reconcile_scd2_tables(pipeline, app, status) == []
+
+    con = duckdb.connect(str(db))
+    assert con.execute(
+        "select _dlt_valid_to is null from fresh_app.object_1 where record_id='1'"
+    ).fetchone()[0]
+    con.close()
+
+
+def test_skipped_unreadable_object_keeps_its_live_rows(tmp_path):
+    """--skip-unreadable must not look like "Knack reported zero" to reconciliation."""
+    app = _one_object_app()
+    db = tmp_path / "t.duckdb"
+    pipeline = dlt.pipeline(pipeline_name="test_skip_keeps", dataset_name="fresh_app",
+                            dev_mode=False, destination=dlt.destinations.duckdb(str(db)))
     status = {}
     pipeline.run(build_knack_resources(app, FakeClient({
-        "object_1": [{"id": "1", "field_1": "current"}],
+        "object_1": [{"id": "1", "field_1": "here"}],
     }), extraction_status=status))
     reconcile_scd2_tables(pipeline, app, status)
 
+    status = {}
+    pipeline.run(build_knack_resources(
+        app, FakeClient({}, unreadable=["object_1"]),
+        skip_unreadable=True, extraction_status=status,
+    ))
+    assert status["object_1"]["skipped"] and not status["object_1"]["completed"]
+    assert reconcile_scd2_tables(pipeline, app, status) == []
+
     con = duckdb.connect(str(db))
-    assert not con.execute(
-        "select _dlt_valid_to is null from fresh_app.A where record_id='1'"
+    assert con.execute(
+        "select _dlt_valid_to is null from fresh_app.object_1 where record_id='1'"
     ).fetchone()[0]
+    con.close()
+
+
+def test_rows_without_lineage_are_left_live(tmp_path):
+    """A NULL _kn_object_id cannot be matched by `= %s`; retiring it would log a
+    retirement that never happened."""
+    app = _one_object_app()
+    db = tmp_path / "t.duckdb"
+    pipeline = dlt.pipeline(pipeline_name="test_null_lineage", dataset_name="fresh_app",
+                            dev_mode=False, destination=dlt.destinations.duckdb(str(db)))
+    status = {}
+    pipeline.run(build_knack_resources(app, FakeClient({
+        "object_1": [{"id": "1", "field_1": "here"}],
+    }), extraction_status=status))
+
+    con = duckdb.connect(str(db))
+    con.execute("update fresh_app.object_1 set _kn_object_id = NULL where record_id='1'")
+    con.close()
+
+    assert reconcile_scd2_tables(pipeline, app, status) == []
+    con = duckdb.connect(str(db))
     assert con.execute(
         "select _dlt_valid_to is null from fresh_app.object_1 where record_id='1'"
     ).fetchone()[0]
@@ -614,6 +669,16 @@ def test_system_and_user_field_names_do_not_collide(tmp_path):
         "select account_status, field_1 from fresh_app.object_1"
     ).fetchone() == ("active", "custom")
     con.close()
+
+
+def test_legacy_slug_named_warehouse_is_flagged_not_reused(tmp_path):
+    """The old file must stay a separate, untouched namespace - and be findable."""
+    from knack_elt.cli import legacy_db_path, stable_app_identifier
+
+    legacy = legacy_db_path("acme-ops", tmp_path)
+    assert legacy == tmp_path / "knack_acme_ops_data.duckdb"
+    current = tmp_path / f"knack_{stable_app_identifier('app/id')}_data.duckdb"
+    assert legacy != current
 
 
 def test_stable_app_identifier_depends_on_app_id_not_slug():
