@@ -265,6 +265,8 @@ git commit -m "Add folded, collision-safe name generation for label views"
 
 **Interfaces:**
 - Consumes: everything from Task 1.
+- **Placeholder style:** dlt's `sql_client.execute_sql` takes `%s` placeholders, not
+  `?`. `reconcile_scd2_tables` in `knack_dlt.py` is the precedent — follow it.
 - Produces:
   - `class MissingCatalogs(Exception)`
   - `@dataclass(frozen=True) class ViewSpec` with fields `object_key: str`, `table_name: str`, `view_name: str`, `history_name: str`, `columns: tuple[tuple[str, str], ...]` (physical column, alias), `omitted_fields: tuple[str, ...]`
@@ -295,7 +297,8 @@ class FakeSqlClient:
         self.con, self.dataset = con, dataset
 
     def execute_sql(self, sql, *args):
-        return self.con.execute(sql, args).fetchall()
+        # dlt's sql_client uses %s placeholders; duckdb's own API uses ?.
+        return self.con.execute(sql.replace("%s", "?"), args).fetchall()
 
     def escape_column_name(self, name):
         return '"' + name.replace('"', '""') + '"'
@@ -476,7 +479,7 @@ def read_catalogs(sql_client):
 def physical_columns(sql_client, table_name: str) -> set[str]:
     rows = sql_client.execute_sql(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = ? AND table_name = ?",
+        "WHERE table_schema = %s AND table_name = %s",
         sql_client.fully_qualified_dataset_name().strip('"'),
         table_name,
     )
@@ -757,7 +760,7 @@ def _existing_views(sql_client, labels_schema):
     """View name -> owning object key (from its comment, or None)."""
     rows = sql_client.execute_sql(
         "SELECT view_name, comment FROM duckdb_views() "
-        "WHERE database_name = current_database() AND schema_name = ?",
+        "WHERE database_name = current_database() AND schema_name = %s",
         labels_schema,
     ) or []
     return {name: comment for name, comment in rows}
