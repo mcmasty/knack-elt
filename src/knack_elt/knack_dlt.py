@@ -5,16 +5,15 @@ passed in by the caller (see `cli.py`).
 """
 import json
 import logging
-from typing import Iterable
-
-from knack_sleuth import Application
+from collections.abc import Iterable
 
 import dlt
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import APIKeyAuth
 from dlt.sources.helpers.rest_client.paginators import PageNumberPaginator
+from knack_sleuth import Application
 
-from .mapping import remap_keys, create_app_mappings
+from .mapping import create_app_mappings, remap_keys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -106,7 +105,7 @@ def clean_empty_strings(row, numeric_fields):
 
 def assign_default_values(row, default_values):
     """Assign default values to fields that are None."""
-    for fk in row.keys():
+    for fk in row:
         if fk in default_values and (row[fk] is None or row[fk] == ""):
             row[fk] = default_values[fk]
     return row
@@ -158,7 +157,7 @@ def get_remap_transformer(table_name, object_id, field_mappings, numeric_fields,
 def build_knack_resources(kn_app: Application, client: RESTClient, skip_unreadable: bool = False):
     """One resource+transformer pair per Knack object, chained with the pipe operator."""
     resources = []
-    field_mappings, object_mappings, numeric_fields, default_values = create_app_mappings(kn_app)
+    field_mappings, _object_mappings, numeric_fields, default_values = create_app_mappings(kn_app)
 
     # Resource names key off obj.key (globally unique in Knack); destination table
     # names come from the object name, which is NOT guaranteed unique, so dedupe.

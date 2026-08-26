@@ -1,17 +1,14 @@
 from pathlib import Path
 
-from knack_sleuth import load_app_metadata
-
 import dlt
-
 import typer
+from knack_sleuth import load_app_metadata
 from rich.console import Console
 from rich.table import Table
 
 from knack_elt import __version__
 from knack_elt.config import settings
 from knack_elt.knack_dlt import build_knack_resources, create_rest_client
-
 
 cli = typer.Typer()
 console = Console()

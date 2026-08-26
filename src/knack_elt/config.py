@@ -1,10 +1,14 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 import os
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    motherduck_api_key: str = os.environ.get('motherduck_api_key', '')
+    # Lowercase deliberately: this is the documented variable name and the one
+    # existing deployments set. os.environ is case-sensitive, so capitalising it
+    # would be a breaking config change.
+    motherduck_api_key: str = os.environ.get('motherduck_api_key', '')  # noqa: SIM112
     knack_app_id: str = Field(default='', alias='KNACK_APP_ID')
     knack_api_key: str = Field(default='', alias='KNACK_API_KEY')
     

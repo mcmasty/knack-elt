@@ -4,11 +4,11 @@ These never touch the Knack API: metadata is a synthetic `Application` and recor
 fetching goes through `FakeClient`. They exist to prove the pipeline is app-agnostic
 - every case here is a shape a fresh Knack app can legally have.
 """
-import pytest
-from knack_sleuth.models import KnackAppMetadata
-
 import dlt
 import duckdb
+import pytest
+from dlt.pipeline.exceptions import PipelineStepFailed
+from knack_sleuth.models import KnackAppMetadata
 
 from knack_elt.knack_dlt import build_knack_resources
 from knack_elt.mapping import create_app_mappings, slugify_field_name
@@ -121,7 +121,7 @@ def test_records_survive_the_remap(collision_app, tmp_path):
     ]
     con = load(collision_app, FakeClient({"object_1": rows}), tmp_path / "t.duckdb")
     names = [c[0] for c in con.execute("select * from fresh_app.Invoices limit 0").description]
-    by_id = {r[names.index("record_id")]: dict(zip(names, r))
+    by_id = {r[names.index("record_id")]: dict(zip(names, r, strict=True))
              for r in con.execute("select * from fresh_app.Invoices").fetchall()}
 
     # Lineage columns are underscore-prefixed so a user field can never land on them.
@@ -163,13 +163,13 @@ def test_partial_failure_aborts_even_when_skipping(tmp_path):
     """A half-fetched object must not reach the SCD2 merge: the rows it failed to
     yield would be retired as if they had been deleted in Knack."""
     app = make_app([make_object("object_1", "A", [("field_1", "X", "short_text")])])
-    with pytest.raises(Exception):
+    with pytest.raises(PipelineStepFailed):
         load(app, PartialFailureClient({}), tmp_path / "t.duckdb", skip_unreadable=True)
 
 
 def test_unreadable_object_aborts_by_default(tmp_path):
     app = make_app([make_object("object_1", "A", [("field_1", "X", "short_text")])])
-    with pytest.raises(Exception):
+    with pytest.raises(PipelineStepFailed):
         load(app, FakeClient({}, unreadable=["object_1"]), tmp_path / "t.duckdb")
 
 
@@ -182,7 +182,7 @@ def test_user_field_named_id_keeps_the_id_column(tmp_path):
     rows = [{"id": "knack_row_1", "field_1": "INV-001", "field_2": "10"}]
     con = load(app, FakeClient({"object_1": rows}), tmp_path / "t.duckdb")
     names = [c[0] for c in con.execute("select * from fresh_app.Invoices limit 0").description]
-    row = dict(zip(names, con.execute("select * from fresh_app.Invoices").fetchall()[0]))
+    row = dict(zip(names, con.execute("select * from fresh_app.Invoices").fetchall()[0], strict=True))
 
     assert row["id"] == "INV-001", "the user's own ID field should own the 'id' column"
     assert row["record_id"] == "knack_row_1", "Knack's row id belongs in record_id"
@@ -200,7 +200,7 @@ def test_knack_auto_record_id_field_cannot_clobber_the_merge_key(tmp_path):
     rows = [{"id": "knack_row_1", "field_1": "knack_row_1", "field_2": "Physics"}]
     con = load(app, FakeClient({"object_1": rows}), tmp_path / "t.duckdb")
     names = [c[0] for c in con.execute("select * from fresh_app.Courses limit 0").description]
-    row = dict(zip(names, con.execute("select * from fresh_app.Courses").fetchall()[0]))
+    row = dict(zip(names, con.execute("select * from fresh_app.Courses").fetchall()[0], strict=True))
 
     assert row["record_id"] == "knack_row_1"
     assert row["course_record_id"] == "knack_row_1", "the auto-field is kept, renamed"

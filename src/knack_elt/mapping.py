@@ -9,7 +9,7 @@ The input to these functions is the Application Metadata object from the Knack A
 """
 import logging
 import re
-from typing import Dict, Any
+from typing import Any
 
 from knack_sleuth.models import Application
 
@@ -117,20 +117,19 @@ def create_app_mappings(app_metadata: Application) -> tuple[
                 numeric_fields.append(field_name)
 
             # Handle boolean fields with defaults
-            if field.type == 'boolean':
-                if field.format and hasattr(field.format, '__dict__'):
-                    # Access format as Pydantic model with extra fields allowed
-                    format_dict = field.format.model_dump()
-                    if 'default' in format_dict:
-                        field_default_value = format_dict['default']
-                        default_values[field_key] = field_default_value
-                        default_values[new_key] = field_default_value
-                        default_values[field_name] = field_default_value
+            if field.type == 'boolean' and field.format and hasattr(field.format, '__dict__'):
+                # Access format as Pydantic model with extra fields allowed
+                format_dict = field.format.model_dump()
+                if 'default' in format_dict:
+                    field_default_value = format_dict['default']
+                    default_values[field_key] = field_default_value
+                    default_values[new_key] = field_default_value
+                    default_values[field_name] = field_default_value
 
     return field_mappings, object_mappings, numeric_fields, default_values
     
 
-def remap_keys(record: Dict[str, Any], field_mapping: Dict[str, str]) -> Dict[str, Any]:
+def remap_keys(record: dict[str, Any], field_mapping: dict[str, str]) -> dict[str, Any]:
     """Remaps the keys of a single record using the provided field mapping."""
     return {field_mapping.get(key, key): value for key, value in record.items()}
 
