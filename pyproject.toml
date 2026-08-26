@@ -4,6 +4,16 @@ version = "0.2.1"
 description = "Generic ELT pipeline: extract any Knack application into DuckDB or MotherDuck with dlt, keeping full SCD2 history."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = ["knack", "elt", "dlt", "duckdb", "motherduck", "data-pipeline", "scd2"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "dlt[duckdb]>=1.30.0",
     "httpx[http2]>=0.28.1",
@@ -13,6 +23,11 @@ dependencies = [
     "typer>=0.27.1",
 ]
 
+
+[project.urls]
+Homepage = "https://github.com/mcmasty/knack-elt"
+Repository = "https://github.com/mcmasty/knack-elt"
+Issues = "https://github.com/mcmasty/knack-elt/issues"
 
 [project.scripts]
 knack-elt = "knack_elt.cli:cli"
@@ -41,6 +56,14 @@ ignore = [
 current_version = "0.2.1"
 commit = true
 tag = true
+allow_dirty = false
+# uv.lock records this package's own version, and CI runs `uv sync --locked`, so a
+# bump that leaves the lock behind fails the release at its first step. Regenerate
+# and stage it inside the bump commit rather than patching it afterwards. Not a
+# [[tool.bumpversion.files]] entry: a bare `version = "x.y.z"` search would also
+# match any dependency that happens to share the version number.
+allow_shell_hooks = true
+pre_commit_hooks = ["uv lock", "git add uv.lock"]
 
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
