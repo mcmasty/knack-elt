@@ -208,25 +208,26 @@ row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works thr
 > null` and still read as live. Emptying an object in Knack is therefore invisible to the flag —
 > a table whose row count stops moving is worth checking against the app.
 >
-> **Edits during a sync can cause a one-run false retirement.** Knack's record API pages by
-> number, not by cursor, so a record inserted or deleted in Knack *while a multi-page extraction
-> is running* shifts the page boundaries under it. A record that slides across a boundary is
-> missed from that batch, and the merge retires it as though it were deleted.
+> **A sync interrupted by edits fails rather than loads.** Knack's record API pages by number,
+> not by cursor, so a record inserted or deleted *while a multi-page extraction is running*
+> shifts the page boundaries under it, and a record can slide across a boundary and be missed.
+> A short batch is indistinguishable from a complete one, so the merge would retire everything
+> absent from it as deleted.
 >
-> Since 0.5.0 the pipeline checks for this: every Knack page response carries a
-> `total_records`, and a run that fetches fewer records than Knack reported it held
-> throughout **aborts that run rather than loading a short batch** — so the merge never
-> gets the chance to retire the missing rows. What follows describes what happened
-> before that check, and what still happens if Knack's envelope omits the count.
+> The pipeline checks for this. Every Knack page response carries a `total_records`, and a run
+> that fetches fewer records than Knack reported it held throughout **aborts instead of loading
+> the batch** — the merge never gets the chance to retire the missing rows. Re-run it and the
+> load succeeds. The window is proportional to how long an object takes to page, so it is widest
+> on the biggest tables.
 >
-> This mostly self-corrects: the next run sees the record again and re-adds it, so
-> `latest_version and is_live_in_knack` is right again within a day. What does *not* correct is
-> the history — the spurious retirement and re-add stay in the table permanently, so a
-> point-in-time query (`_dlt_valid_from <= d and (_dlt_valid_to is null or _dlt_valid_to > d)`)
-> over that window reports the record as deleted when it never was. For a record to look
-> *durably* gone it would have to be missed the same way on consecutive runs, which is unlikely;
-> for its timeline to have a spurious gap, once is enough. The window is proportional to how long
-> a large object takes to page, so it is widest on the biggest tables.
+> If Knack's response ever omits `total_records`, the check is skipped rather than failing
+> closed, and the original hazard applies: a missed record is retired as deleted. That mostly
+> self-corrects — the next run sees it again and re-adds it, so `latest_version and
+> is_live_in_knack` is right again within a day, and a record would have to be missed the same
+> way on consecutive runs to look durably gone. What does *not* self-correct is the history. The
+> spurious retirement and re-add stay in the table permanently, so a point-in-time query
+> (`_dlt_valid_from <= d and (_dlt_valid_to is null or _dlt_valid_to > d)`) over that window
+> reports the record as deleted when it never was. Once is enough for that.
 
 ## Documentation
 
