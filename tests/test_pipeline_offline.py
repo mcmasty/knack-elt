@@ -20,12 +20,21 @@ from knack_elt.mapping import create_app_mappings
 
 
 def make_object(key, name, fields, singular=None):
+    """`fields` entries are (key, name, type) or (key, name, type, format)."""
     singular = singular or name
+
+    def field(entry):
+        key, name, type_, *rest = entry
+        spec = {"key": key, "name": name, "type": type_}
+        if rest:
+            spec["format"] = rest[0]
+        return spec
+
     return {
         "key": key,
         "name": name,
         "inflections": {"singular": singular, "plural": f"{singular}s"},
-        "fields": [{"key": k, "name": n, "type": t} for k, n, t in fields],
+        "fields": [field(entry) for entry in fields],
     }
 
 
@@ -655,6 +664,42 @@ def test_rows_without_lineage_are_left_live(tmp_path):
     assert con.execute(
         "select _dlt_valid_to is null from fresh_app.object_1 where record_id='1'"
     ).fetchone()[0]
+    con.close()
+
+
+def test_boolean_default_declared_in_knack_lands_in_duckdb(tmp_path):
+    """A boolean a user never touched comes back as '' in format=raw. The declared
+    default is what the Knack UI shows for it, so that is what the warehouse holds."""
+    app = make_app([make_object("object_1", "Flags", [
+        ("field_1", "Active", "boolean", {"default": True, "format": "yes_no"}),
+    ])])
+    _, _, _, defaults = create_app_mappings(app)
+    assert defaults == {"field_1": True}, defaults
+
+    con = load(app, FakeClient({"object_1": [
+        {"id": "1", "field_1": ""},      # never set by a user
+        {"id": "2", "field_1": False},   # explicitly off - the default must not win
+    ]}), tmp_path / "t.duckdb")
+    assert con.execute(
+        "select record_id, field_1 from fresh_app.object_1 order by record_id"
+    ).fetchall() == [("1", True), ("2", False)]
+    con.close()
+
+
+def test_default_is_not_invented_for_a_field_absent_from_the_payload(tmp_path):
+    """Knack omits keys it has no value for on some field types. The pipeline fills a
+    default only where the field is present and empty - it does not fabricate rows."""
+    app = make_app([make_object("object_1", "Flags", [
+        ("field_1", "Active", "boolean", {"default": True, "format": "yes_no"}),
+        ("field_2", "Name", "short_text"),
+    ])])
+    con = load(app, FakeClient({"object_1": [{"id": "1", "field_2": "x"}]}),
+               tmp_path / "t.duckdb")
+    columns = [r[0] for r in con.execute(
+        "select column_name from information_schema.columns "
+        "where table_schema='fresh_app' and table_name='object_1'"
+    ).fetchall()]
+    assert "field_1" not in columns, columns
     con.close()
 
 
