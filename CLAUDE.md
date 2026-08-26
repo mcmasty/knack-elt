@@ -103,6 +103,12 @@ previously ended up pointing at different apps.
 
 **Chaining**: `table_resource | transformer_resource` (pipe operator).
 
+**Bookkeeping tables**: `_load_info` appends (one row per sync, the audit trail for when the
+warehouse last moved); `_trace` replaces, because a trace normalizes into 19 tables and several
+grow per run — `_trace__steps__step_info__load_packages__tables__columns` is one row per column
+per table per sync. Both dispositions are stated explicitly; neither should be left to inherit
+the default. The label catalogs replace.
+
 **Write disposition**: `{"disposition": "merge", "strategy": "scd2"}`, `primary_key=RECORD_KEY`, on
 both resource and transformer. `columns={RECORD_KEY: {"merge_key": False}}` works around a suspected
 dlt bug.
@@ -162,6 +168,13 @@ Known source limitation, documented in the README:
   would change the answer is Knack shipping a cursor API, not a faster sort.
 
 ## Testing
+
+Two offline suites, neither of which touches the network or needs credentials.
+
+`tests/test_cli.py` covers the CLI surface with Typer's `CliRunner` — the argument and
+destination validation a user actually hits, plus a test pinning that all of it happens before
+any metadata fetch. It blanks `settings` per test so a developer's own `.env` cannot decide
+whether an assertion holds.
 
 `tests/test_pipeline_offline.py` runs the real source against a `FakeClient` and synthetic
 `Application` fixtures — no network, no credentials. Every case is a shape a fresh Knack app can

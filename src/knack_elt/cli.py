@@ -131,8 +131,10 @@ def run_pipeline(
     skip_unreadable: bool = typer.Option(
         False,
         "--skip-unreadable",
-        help="Log and skip objects that fail before yielding any row (e.g. no read "
-             "permission) instead of aborting the run. An object that fails partway "
+        help="Log and skip an object that returns HTTP 403 before yielding any row "
+             "(no read permission on the API key) instead of aborting the run. Nothing "
+             "else is swallowed: 401, 429, 5xx, timeouts and network errors all abort, "
+             "as does a short batch. An object that fails partway "
              "through still aborts: a partial batch would retire live SCD2 rows.",
     ),
 ):
@@ -248,8 +250,15 @@ def run_pipeline(
 
     # Keep the data run's own bookkeeping alongside the data. Capture the trace
     # before loading these bookkeeping rows so `_trace` describes the actual sync.
-    knack_dlt_pipeline.run([load_info], table_name="_load_info")
-    knack_dlt_pipeline.run([data_trace], table_name="_trace")
+    #
+    # Dispositions are stated rather than inherited, because the two differ. A
+    # load_info row is one row per sync and is the audit trail you query for when the
+    # warehouse last moved, so it appends. A trace normalizes into 19 tables, several
+    # of which grow per run - `_trace__steps__step_info__load_packages__tables__columns`
+    # is one row per column per table per sync - so keeping every historical trace
+    # costs more than it is worth. Only the last run's detail is kept.
+    knack_dlt_pipeline.run([load_info], table_name="_load_info", write_disposition="append")
+    knack_dlt_pipeline.run([data_trace], table_name="_trace", write_disposition="replace")
 
 
 if __name__ == "__main__":
