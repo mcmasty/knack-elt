@@ -97,7 +97,43 @@ previously ended up pointing at different apps.
   `date_time`, `auto_increment`, `count`, `sum`, `min`, `max`, `average`, `equation`, `rating`.
   Omitting a type means that column types as VARCHAR full of `''` — add new types here.
 
-**cli.py** — Typer app: `--version` plus `run-pipeline`
+**labels.py** — the label view layer: current Knack labels as browsable views over the
+immutable `object_N` / `field_N` tables, never touching them. No Knack dependency; it only
+reads the warehouse.
+- `object_view_names()`, `column_aliases()`, `assert_globally_unique()`: pure name generation,
+  no database. **Comparison is folded, emission is verbatim** — DuckDB folds identifiers
+  ASCII-case-insensitively *even when quoted*, so `"Classes"` and `"classes"` are one catalog
+  object and `CREATE OR REPLACE` silently destroys whichever was created second. Every name
+  comparison here goes through `fold()`; every identifier actually emitted into SQL is the
+  original text, verbatim, with embedded `"` doubled. Get this backwards and a collision either
+  goes undetected or a working view gets needlessly suffixed.
+- `read_catalogs()`, `physical_columns()`, `build_view_specs()`, `view_sql()`: read
+  `_kn_object_catalog` / `_kn_field_catalog` plus `information_schema.columns`, and generate one
+  `CREATE OR REPLACE VIEW` per object per {live, history} pair. A catalog field with no physical
+  column yet (dlt creates a column only once a value has arrived) is omitted from the view
+  rather than emitted as a reference that would fail it.
+- `view_columns()`: how drift is detected — a view's **column list**, read from
+  `duckdb_columns()`, never the stored SQL. DuckDB rewrites a view's definition on save
+  (`CREATE OR REPLACE` dropped, identifiers unquoted where possible, `WHERE` parenthesized), so
+  comparing generated SQL to `duckdb_views().sql` never matches and reports drift no rebuild can
+  clear.
+- `plan_label_views(pipeline) -> LabelViewPlan` / `apply_label_views(pipeline, plan) -> int`:
+  plan is a read-only diff; apply is **a full rebuild in one transaction, not an incremental
+  diff** — drop everything currently in `{stable_app_id}_labels`, then recreate the whole target
+  set. Not incremental on purpose: if one object's new name is the name another object's view
+  currently holds, any create-then-drop order transiently clobbers one of them mid-rebuild. The
+  first failure rolls everything back; there is no partial state and no per-view failure list.
+- Two views per object — `"Classes"` (live rows) and `"Classes_history"` (every version, plus
+  `valid_from` / `valid_to` / `is_live_in_knack`) — because "current" has two meanings under
+  SCD2, and conflating them is this file's first SCD2 trap below.
+- `{stable_app_id}_labels` is knack-elt-managed: every apply removes hand-authored **views**
+  there; a hand-authored **table** blocks the apply instead (DuckDB won't let a view replace a
+  table) and the error names it.
+- Only `knack-elt refresh-views` calls `apply_label_views`, and only after printing the plan and
+  asking. `run-pipeline` calls `plan_label_views` and only reports drift — it never applies it.
+  A label edit in the Knack builder must never move a warehouse name on its own.
+
+**cli.py** — Typer app: `--version`, `run-pipeline`, `refresh-views`
 
 ### Data Processing Details
 
@@ -169,7 +205,7 @@ Known source limitation, documented in the README:
 
 ## Testing
 
-Two offline suites, neither of which touches the network or needs credentials.
+Three offline suites, none of which touches the network or needs credentials.
 
 `tests/test_cli.py` covers the CLI surface with Typer's `CliRunner` — the argument and
 destination validation a user actually hits, plus a test pinning that all of it happens before
@@ -182,11 +218,16 @@ legally have (colliding slugs, non-Latin field names, fields named "Table Name",
 names, unreadable objects, mid-stream failures). Add regressions here rather than reaching for a
 live app id.
 
+`tests/test_labels.py` covers `labels.py`: pure name-generation cases need no database, and the
+read/plan/apply functions run against real DuckDB files in `tmp_path` (a `FakeSqlClient` for the
+pure-SQL helpers, a real `dlt.pipeline(..., destination=dlt.destinations.duckdb(...))` for the
+rest) — never a live app id.
+
 ## Documentation
 
 `docs/ARCHITECTURE.md` is the architecture reference — four diagram sections, five ```mermaid
 blocks (section 1 has two). `docs/ARCHITECTURE.pdf` is a build artifact of it: regenerate with
-`uv run scripts/build_architecture_pdf.py` (needs node and Chrome; correct output is 12 pages)
+`uv run scripts/build_architecture_pdf.py` (needs node and Chrome; correct output is 13 pages)
 whenever the markdown changes. When editing any mermaid block — in `docs/ARCHITECTURE.md` or
 `README.md`, which has one of its own — render it with mermaid-cli before committing; parse
 errors and unreadable layouts are invisible in the markdown source.

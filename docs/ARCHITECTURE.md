@@ -100,6 +100,7 @@ flowchart TB
     subgraph md["Warehouse — MotherDuck (DuckDB cloud)"]
         raw[("raw schema — dlt writes here<br/>knack_{stable_app_id}_data.{stable_app_id}<br/>object_N tables · field_N columns<br/>full SCD2 history")]
         obs[("_load_info · _trace<br/>_kn_object_catalog · _kn_field_catalog<br/>observability + current labels")]
+        labels[("_labels schema — views only<br/>{stable_app_id}_labels<br/>current-label names over raw · two views per object<br/>disposable — refresh-views rebuilds, run-pipeline only reports drift")]
 
         subgraph rep["reporting schema — the tables people query<br/>defined and built by dbt (companion repo)"]
             stg["staging views (stg_*)<br/>one per source table<br/>SCD2 flags · currency + date casts<br/>connection-array extraction"]
@@ -129,11 +130,13 @@ flowchart TB
 
     cron ==>|"triggers"| pipe
     raw -.->|"scheduled Parquet export<br/>(optional)"| s3
+    obs -.->|"knack-elt refresh-views<br/>explicit, asks first"| labels
 
     classDef here fill:#dbeafe,stroke:#1d4ed8,stroke-width:3px
     classDef optional fill:#fafafa,stroke:#9ca3af,stroke-width:2px,stroke-dasharray: 6 4
     class elt here
     class s3 optional
+    class labels optional
 ```
 
 **The load-bearing detail: schema ownership is split.**
@@ -141,7 +144,20 @@ flowchart TB
 | Schema | Owner | Contents | Rule |
 |---|---|---|---|
 | raw (the stable app-id dataset) | dlt | One `object_N` table per Knack object, `field_N` columns, full SCD2 history | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
+| `{stable_app_id}_labels` | knack-elt (`labels.py`) | Two views per object — `"Classes"` (live rows) and `"Classes_history"` (every version, plus `valid_from` / `valid_to` / `is_live_in_knack`) | Views only, disposable, rebuilt wholesale by `knack-elt refresh-views` — never automatically, never touching `object_N` / `field_N`. |
 | `reporting` | dbt | Staging + mart views | Everything downstream reads here. No dashboard queries raw directly. |
+
+**Label views are this repo's, not the companion repo's.** `{stable_app_id}_labels` is generated
+from `_kn_object_catalog` / `_kn_field_catalog` — the labels loaded on every sync — so an
+analyst can browse `"Classes"` instead of `object_3`. It is disposable and read-only: identifier
+comparisons are ASCII-case folded so `"Classes"` and `"classes"` can't collide, but every name
+emitted into SQL is verbatim, and an apply is a full drop-and-rebuild in one transaction rather
+than an incremental diff, because an incremental create-then-drop can transiently clobber a view
+if two objects swap the names their views hold. Nothing rebuilds this layer on its own — a label
+edited in the Knack builder must never move a warehouse name by itself. `knack-elt refresh-views`
+prints a plan and asks before applying it; `run-pipeline` only reports drift at the end of a sync
+and changes nothing. A hand-authored view in the schema is removed on the next apply; a
+hand-authored table blocks the rebuild instead and is named in the error.
 
 Staging exists so that exactly one layer absorbs the mess Knack and dlt produce
 together — currency strings with commas, dates wrapped in JSON, connection fields
@@ -311,7 +327,10 @@ sequenceDiagram
 
 Either way the run sets `load.workers = 3` and `truncate_staging_dataset = True`, reconciles
 confirmed-empty and removed objects, and writes `_load_info`, `_trace`, `_kn_object_catalog`
-and `_kn_field_catalog` beside the data.
+and `_kn_field_catalog` beside the data. Last, if a `{stable_app_id}_labels` schema already
+exists, it reports any label drift since those views were last built — read-only, and never
+able to change the run's exit code. See [the label views section](#1-reference-architecture)
+above for what builds and rebuilds that schema.
 
 The application id and REST API key are threaded from the CLI into the record client, so
 `--app-id` alone fully determines which app is read — metadata and records cannot disagree.
