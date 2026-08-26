@@ -144,10 +144,16 @@ Known gaps, both documented in the README, neither cheaply fixable:
 - An object returning zero records produces no load package at all, so previously loaded rows
   stay marked live. Emptying an object in Knack is invisible to the flag.
 - Knack's record API pages by number, not cursor, so a record inserted or deleted mid-extraction
-  shifts page boundaries and can be missed from that batch, then retired as deleted. The *live*
-  flag self-corrects on the next run; the spurious retire/re-add pair stays in the history, so
-  point-in-time queries over that window are wrong. A `sort_field`/`sort_order` on a stable field
-  would narrow the window but not close it.
+  shifts page boundaries and can be missed from that batch. **Detected, not prevented**: each page
+  envelope carries `total_records`, and `get_knack_table_data` raises `RecordCountShortfall` when
+  fewer records arrive than Knack reported throughout, which aborts before the merge can retire
+  them. The comparison floor is `min(first_total, last_total)` — the count moves under us, and the
+  lower endpoint is what we can be sure was present the whole time. `--skip-unreadable` explicitly
+  does **not** swallow this. If the envelope omits the count, reconciliation is skipped rather
+  than failing closed.
+- Not yet done: `sort_field=<Record ID field key>&sort_order=asc` would stop *insertions* from
+  shifting boundaries at all (verified working against the live API — note `sort_field=id` is
+  silently ignored; it must be the field key of Knack's auto-added "Record ID" field).
 
 ## Testing
 

@@ -28,6 +28,27 @@ LINEAGE_OBJECT_ID = "_kn_object_id"
 # that predate that field.
 RECORD_KEY = "record_id"
 
+
+class RecordCountShortfall(Exception):
+    """Fewer records came back than Knack said the object holds.
+
+    Raised instead of returning a short batch, because dlt would treat a short
+    batch as a complete one and the SCD2 merge would retire every record missing
+    from it as though it had been deleted in Knack.
+    """
+
+
+def _reported_total(page) -> int | None:
+    """Knack's `total_records` for the page, or None if the envelope lacks it.
+
+    dlt unwraps the response to the records array (data_selector), but attaches the
+    raw response to the page, which is where the count lives.
+    """
+    try:
+        return page.response.json().get("total_records")
+    except Exception:
+        return None
+
 # dlt snake_cases whatever table name we hand it, *after* we choose it. Deduping on
 # the raw Knack object name is therefore not enough.
 _NAMING = NamingConvention()
@@ -106,9 +127,13 @@ def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
         kn_params = {'rows_per_page': 1000, 'format': 'raw'}
         url = f"/objects/{object_id}/records"
         yielded = 0
+        totals = []
         try:
             for page in client.paginate(url, params=kn_params):
                 logger.debug(f"Fetched {len(page)} records from {table_name}")
+                reported = _reported_total(page)
+                if reported is not None:
+                    totals.append(reported)
                 for row in page:
                     if row.get('id') is None:
                         logger.warning(
@@ -126,12 +151,33 @@ def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
 
                     yielded += 1
                     yield row
+
+            # Knack pages by number, not by cursor, so a record inserted or deleted
+            # mid-extraction shifts the page boundaries and one can slip through the
+            # gap. Compare what arrived against what Knack said it held: a record
+            # present for the whole run should have been on some page. Both endpoints
+            # are used because the count itself moves - the lower one is the number we
+            # can be sure was there throughout.
+            if totals:
+                floor = min(totals[0], totals[-1])
+                if yielded < floor:
+                    raise RecordCountShortfall(
+                        f"{table_name} ({object_id}): fetched {yielded} records but Knack "
+                        f"reported at least {floor} throughout "
+                        f"(first page said {totals[0]}, last said {totals[-1]}). "
+                        f"Records shifted across a page boundary mid-extraction; "
+                        f"loading this batch would retire the missing rows as deleted."
+                    )
+            logger.info(
+                f"{table_name}: {yielded} records"
+                + (f" (Knack reported {totals[-1]})" if totals else "")
+            )
         except Exception as e:
             # Swallowing an error *after* rows were yielded would hand dlt a
             # successful partial extraction, and the SCD2 merge would retire every
             # row missing from that partial batch. Only a zero-yield failure is safe
             # to skip.
-            if skip_unreadable and yielded == 0:
+            if skip_unreadable and yielded == 0 and not isinstance(e, RecordCountShortfall):
                 logger.error(f"Skipping unreadable object {table_name} ({object_id}): {e}")
                 return
             logger.error(f"Error fetching data for table {table_name}: {e}")
