@@ -31,6 +31,16 @@ LINEAGE_OBJECT_ID = "_kn_object_id"
 RECORD_KEY = "record_id"
 
 
+class MalformedRecord(Exception):
+    """A record arrived without Knack's top-level `id`.
+
+    Every Knack record has one, so its absence means the payload is not what the
+    API contract says it is. Dropping the row would quietly shrink the batch, and
+    when the page envelope carries no `total_records` there is nothing left to
+    notice - the same reason a short batch aborts rather than loading.
+    """
+
+
 class RecordCountShortfall(Exception):
     """Fewer records came back than Knack said the object holds.
 
@@ -154,11 +164,11 @@ def get_knack_table_data(
                         status["totals"] = list(totals)
                 for row in page:
                     if row.get('id') is None:
-                        logger.warning(
-                            f"Skipping a record with no id in {table_name}; "
-                            f"its fields were {sorted(row)}"
+                        raise MalformedRecord(
+                            f"{table_name} ({object_id}): a record arrived without an "
+                            f"id; its fields were {sorted(row)}. Loading the rest would "
+                            f"hand dlt a short batch as though it were complete."
                         )
-                        continue
                     # Rename before anything else so the merge key is set even if a
                     # user-defined field also wants the "id" column. This mutates the
                     # row in place; each page is freshly deserialized JSON, so nothing
