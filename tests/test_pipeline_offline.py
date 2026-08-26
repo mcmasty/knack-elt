@@ -264,3 +264,106 @@ def test_default_db_dir_honours_xdg_data_home(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     assert default_db_dir() == tmp_path / "xdg" / "knack-elt"
+
+
+def test_object_names_that_normalize_alike_get_separate_tables(tmp_path):
+    """dlt snake_cases the table name we choose, *after* we choose it. Deduping on the
+    raw Knack name lets "Order Items" and "order-items" land in one table, where each
+    run's merge retires the other object's rows as deleted-in-Knack."""
+    app = make_app([
+        make_object("object_1", "Order Items", [("field_1", "SKU", "short_text")]),
+        make_object("object_2", "order-items", [("field_2", "SKU", "short_text")]),
+    ])
+    client = FakeClient({
+        "object_1": [{"id": "a", "field_1": "from-object-1"}],
+        "object_2": [{"id": "b", "field_2": "from-object-2"}],
+    })
+    con = load(app, client, tmp_path / "t.duckdb")
+    tables = [r[0] for r in con.execute(
+        "select table_name from information_schema.tables where table_schema='fresh_app'"
+    ).fetchall()]
+    data_tables = [t for t in tables if not t.startswith("_dlt")]
+    assert len(data_tables) == 2, f"the two objects shared a table: {data_tables}"
+    con.close()
+
+
+def test_non_latin_object_names_do_not_collide(tmp_path):
+    """Every name with no ASCII alphanumerics normalizes to the literal table 'x', so
+    two unrelated non-Latin objects would otherwise share one table."""
+    app = make_app([
+        make_object("object_1", "顧客", [("field_1", "Name", "short_text")]),
+        make_object("object_2", "注文", [("field_2", "Total", "number")]),
+    ])
+    client = FakeClient({
+        "object_1": [{"id": "a", "field_1": "x"}],
+        "object_2": [{"id": "b", "field_2": "1"}],
+    })
+    con = load(app, client, tmp_path / "t.duckdb")
+    data_tables = [r[0] for r in con.execute(
+        "select table_name from information_schema.tables where table_schema='fresh_app'"
+    ).fetchall() if not r[0].startswith("_dlt")]
+    assert len(data_tables) == 2, f"non-Latin object names collided: {data_tables}"
+    assert not any(t.startswith("_") for t in data_tables), "dlt owns the underscore prefix"
+    con.close()
+
+
+def test_colliding_objects_do_not_retire_each_others_rows(tmp_path):
+    """The real cost of a shared table: on the next run, one object's SCD2 merge
+    retires the other object's rows, falsely marking them deleted in Knack."""
+    app = make_app([
+        make_object("object_1", "Order Items", [("field_1", "SKU", "short_text")]),
+        make_object("object_2", "order-items", [("field_2", "SKU", "short_text")]),
+    ])
+    db = tmp_path / "t.duckdb"
+    pipeline = dlt.pipeline(pipeline_name="test_collide", dataset_name="fresh_app",
+                            dev_mode=False, destination=dlt.destinations.duckdb(str(db)))
+    # Fresh dicts per run: the resource renames `id` in place, so a row cannot be
+    # replayed - which is fine against a live API, where every page is new JSON.
+    pipeline.run(build_knack_resources(app, FakeClient({
+        "object_1": [{"id": "a", "field_1": "keep-me"}],
+        "object_2": [{"id": "b", "field_2": "keep-me-too"}],
+    })))
+    # Second run: object_2 returns nothing. It must not retire object_1's record.
+    pipeline.run(build_knack_resources(app, FakeClient({
+        "object_1": [{"id": "a", "field_1": "keep-me"}],
+    })))
+
+    con = duckdb.connect(str(db))
+    # dlt stores the normalized name, so ask the catalog rather than guessing.
+    tables = [r[0] for r in con.execute(
+        "select table_name from information_schema.tables where table_schema='fresh_app'"
+    ).fetchall() if not r[0].startswith("_dlt")]
+    live = {t: con.execute(
+        f'select count(*) from fresh_app."{t}" where _dlt_valid_to is null'
+    ).fetchone()[0] for t in tables}
+
+    assert sum(live.values()) == 2, (
+        f"a record was retired by an unrelated object's merge: {live}")
+    con.close()
+
+
+def test_record_id_reservation_survives_an_unslugifiable_singular():
+    """The escape for a reserved slug prefixes the object's singular - which slugifies
+    straight back to 'record_id' when the singular has no ASCII alphanumerics."""
+    app = make_app([make_object("object_1", "顧客", [
+        ("field_1", "Record ID", "short_text"),
+        ("field_2", "Name", "short_text"),
+    ], singular="顧客")])
+    field_mappings, _, _, _ = create_app_mappings(app)
+    slugs = list(field_mappings["object_1"].values())
+
+    assert "record_id" not in slugs, f"a field claimed the merge key's column: {slugs}"
+    assert len(slugs) == len(set(slugs)), slugs
+
+
+def test_field_named_like_an_escape_hatch_still_gets_its_own_column():
+    """The collision fallback is `{slug}_{field_key}` - a field literally named that
+    can already hold the column, so the fallback has to be re-checked too."""
+    app = make_app([make_object("object_1", "Invoices", [
+        ("field_1", "Total ($)", "currency"),
+        ("field_2", "Total (%)", "number"),
+        ("field_13", "Total field 2", "short_text"),
+    ], singular="Invoice")])
+    field_mappings, _, _, _ = create_app_mappings(app)
+    slugs = list(field_mappings["object_1"].values())
+    assert len(slugs) == len(set(slugs)), f"fallback collided: {slugs}"
