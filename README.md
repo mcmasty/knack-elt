@@ -69,9 +69,10 @@ four — MotherDuck, dbt and Preset, orchestrated by a daily GitHub Actions job 
 - **Discovers your schema.** Reads the Knack application metadata and builds a resource per
   object, so there is no table list to maintain. Add an object in Knack and the next run picks
   it up.
-- **Gives you readable column names.** `field_43` becomes `event_name`, slugified from the field
-  label you already chose in the builder. Knack's own row id is loaded as `record_id`, so a
-  field you named `id` keeps the `id` column it was named for.
+- **Keeps schema identities stable.** Physical tables and columns use Knack's immutable
+  `object_N` and `field_N` keys, so renaming an app, object or field cannot split history or
+  silently move current values. `_kn_object_catalog` and `_kn_field_catalog` keep the current
+  human-readable labels beside those keys. Knack's own row id is loaded as `record_id`.
 - **Cleans what the API hands back.** Empty strings become `NULL` in numeric fields, and
   boolean fields get the default declared in Knack, so a column of numbers types as numbers
   rather than as text full of `''`.
@@ -137,15 +138,16 @@ knack-elt run-pipeline --app-id "$KNACK_APP_ID"
 Your Knack REST API key comes from the Knack builder under **Settings → API & Code**. The
 pipeline only ever reads.
 
-Names are derived from your app's slug, so a second app never lands on the first one's tables:
-database `knack_{slug}_data`, dataset `{slug}`, pipeline `knack_{slug}_pipeline`.
+Physical names derive from the immutable app id, not the editable app slug. The CLI prints the
+safe `{stable_app_id}` it derives, then uses database `knack_{stable_app_id}_data`, dataset
+`{stable_app_id}`, and pipeline `knack_{stable_app_id}_pipeline`.
 
 ### Destinations
 
 `--destination local` (the default) writes a DuckDB file — nothing to sign up for, so a fresh
 install can be pointed at a Knack app and produce a queryable warehouse immediately.
 
-The file goes to `$XDG_DATA_HOME/knack-elt/knack_{slug}_data.duckdb`, falling back to
+The file goes to `$XDG_DATA_HOME/knack-elt/knack_{stable_app_id}_data.duckdb`, falling back to
 `~/.local/share/knack-elt/`. That location is deliberately **not** relative to the working
 directory: the same app must keep one warehouse wherever you run the command, or a record's
 SCD2 history silently splits across directories. Pass `--db-path` to put it somewhere else.
@@ -156,8 +158,14 @@ knack-elt run-pipeline --app-id "$KNACK_APP_ID" --db-path ~/knack.duckdb
 knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
 ```
 
-`--destination motherduck` loads to `md:///knack_{slug}_data` and needs `motherduck_api_key`
-in the environment. Both destinations also write the run's `_load_info` and `_trace` tables.
+`--destination motherduck` loads to `md:///knack_{stable_app_id}_data` and needs
+`motherduck_api_key` in the environment. Both destinations also write the run's `_load_info`,
+`_trace`, `_kn_object_catalog`, and `_kn_field_catalog` tables.
+
+> **Naming migration:** older releases derived databases, datasets, tables and columns from
+> editable labels. Stable key-based naming intentionally starts a new physical namespace.
+> Preserve an existing warehouse and migrate its history deliberately; do not delete the old
+> DuckDB file or MotherDuck database after upgrading.
 
 ### Other flags
 
@@ -165,7 +173,7 @@ in the environment. Both destinations also write the run's `_load_info` and `_tr
 | --- | --- |
 | `--api-key` | Knack REST API key, if you would rather not set `KNACK_API_KEY` |
 | `--refresh-metadata` | Re-fetch app metadata instead of reusing knack-sleuth's 24h on-disk cache |
-| `--skip-unreadable` | Log and continue past objects that fail *before yielding any row* (typically no read permission). An object that fails partway through still aborts the run — loading a partial batch would retire live SCD2 rows as if the missing records had been deleted in Knack. |
+| `--skip-unreadable` | Log and continue past an object only when its first request returns HTTP 403. Authentication failures, rate limits, timeouts, server errors and failures after any row was yielded still abort the run. |
 
 ## Configuration
 
@@ -201,24 +209,16 @@ A record deleted in Knack survives only as a *retired* row, so filtering on
 And aggregating without `latest_version` double-counts, because every past version is still a
 row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works through both.
 
-> **Two caveats on `is_live_in_knack`.**
->
-> **An emptied object stays "live".** If an object returns *zero* records, dlt has nothing to
-> load for that table and the merge never runs, so rows loaded earlier keep `_dlt_valid_to is
-> null` and still read as live. Emptying an object in Knack is therefore invisible to the flag —
-> a table whose row count stops moving is worth checking against the app.
->
-> **A sync interrupted by edits fails rather than loads.** Knack's record API pages by number,
+> **Source-consistency caveat.** Knack's record API pages by number,
 > not by cursor, so a record inserted or deleted *while a multi-page extraction is running*
 > shifts the page boundaries under it, and a record can slide across a boundary and be missed.
-> A short batch is indistinguishable from a complete one, so the merge would retire everything
-> absent from it as deleted.
+> A missed record can therefore be retired as though it were deleted.
 >
-> The pipeline checks for this. Every Knack page response carries a `total_records`, and a run
+> The pipeline has a best-effort check. Every Knack page response carries a `total_records`, and a run
 > that fetches fewer records than Knack reported it held throughout **aborts instead of loading
 > the batch** — the merge never gets the chance to retire the missing rows. Re-run it and the
-> load succeeds. The window is proportional to how long an object takes to page, so it is widest
-> on the biggest tables.
+> load can succeed. Equal-count concurrent insertion/deletion can evade this test, so schedule
+> snapshots during a quiet period. The window is widest on the biggest tables.
 >
 > If Knack's response ever omits `total_records`, the check is skipped rather than failing
 > closed, and the original hazard applies: a missed record is retired as deleted. That mostly
@@ -228,6 +228,9 @@ row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works thr
 > spurious retirement and re-add stay in the table permanently, so a point-in-time query
 > (`_dlt_valid_from <= d and (_dlt_valid_to is null or _dlt_valid_to > d)`) over that window
 > reports the record as deleted when it never was. Once is enough for that.
+>
+> Confirmed-empty objects and objects removed from metadata are handled separately after a
+> successful load: their remaining live rows are explicitly retired.
 
 ## Documentation
 

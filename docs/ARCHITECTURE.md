@@ -98,8 +98,8 @@ flowchart TB
     end
 
     subgraph md["Warehouse — MotherDuck (DuckDB cloud)"]
-        raw[("raw schema — dlt writes here<br/>knack_{slug}_data.{slug}<br/>one table per Knack object<br/>full SCD2 history")]
-        obs[("_load_info · _trace<br/>pipeline observability")]
+        raw[("raw schema — dlt writes here<br/>knack_{stable_app_id}_data.{stable_app_id}<br/>object_N tables · field_N columns<br/>full SCD2 history")]
+        obs[("_load_info · _trace<br/>_kn_object_catalog · _kn_field_catalog<br/>observability + current labels")]
 
         subgraph rep["reporting schema — the tables people query<br/>defined and built by dbt (companion repo)"]
             stg["staging views (stg_*)<br/>one per source table<br/>SCD2 flags · currency + date casts<br/>connection-array extraction"]
@@ -140,7 +140,7 @@ flowchart TB
 
 | Schema | Owner | Contents | Rule |
 |---|---|---|---|
-| raw (the app slug, e.g. `acme_ops`) | dlt | One table per Knack object, full SCD2 history, Knack-shaped values | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
+| raw (the stable app-id dataset) | dlt | One `object_N` table per Knack object, `field_N` columns, full SCD2 history | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
 | `reporting` | dbt | Staging + mart views | Everything downstream reads here. No dashboard queries raw directly. |
 
 Staging exists so that exactly one layer absorbs the mess Knack and dlt produce
@@ -163,8 +163,8 @@ needs a different surface (a scoped API in front of MotherDuck), not a BI seat.
 ## 2. Pipeline flow
 
 What one run of knack-elt does. Two inputs from Knack: the **app metadata**
-(schema) and the **records** (data). The metadata is what turns `field_73` into
-`payroll_name`.
+(schema) and the **records** (data). Immutable keys identify physical tables and
+columns; metadata labels are loaded into catalog tables for discovery.
 
 ```mermaid
 flowchart TB
@@ -175,8 +175,8 @@ flowchart TB
         meta["Knack app metadata<br/>GET /applications/{app_id}<br/>via knack-sleuth"]
         cam["create_app_mappings()"]
         meta --> cam
-        cam --> om["object_mappings<br/>object name → object_id"]
-        cam --> fm["field_mappings<br/>object_id → field_key → slug<br/>colliding or empty slug → field key"]
+        cam --> om["object_mappings<br/>object_id → stable table object_N"]
+        cam --> fm["field_mappings<br/>object_id → field_key → field_key"]
         cam --> nf["numeric_fields<br/>number · currency · link · date_time<br/>auto_increment · count · sum · min · max<br/>average · equation · rating"]
         cam --> dv["default_values<br/>boolean field defaults"]
     end
@@ -200,7 +200,7 @@ flowchart TB
             direction TB
             ces["clean_empty_strings()<br/>empty string → None<br/>in numeric fields"]
             adv["assign_default_values()<br/>None or empty → declared default"]
-            rk["remap_keys()<br/>field_43 → event_name"]
+            rk["remap_keys()<br/>field keys stay stable"]
             ces --> adv --> rk
         end
 
@@ -219,33 +219,26 @@ flowchart TB
         norm["normalize<br/>max_table_nesting=0 → flat tables"]
         merge["merge, strategy = scd2<br/>primary_key = record_id"]
         dest[("destination<br/>DuckDB or MotherDuck")]
-        info["load_info + trace<br/>→ _load_info / _trace tables"]
-        norm --> merge --> dest --> info
+        rec["reconcile confirmed-empty,<br/>removed + legacy-named objects"]
+        info["load_info + trace + label catalogs"]
+        norm --> merge --> dest --> rec --> info
     end
 ```
 
 **Notes on the mapping pass**
 
-- Field names are slugified with `re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')`,
-  so `"Work Order / Job Details"` becomes `work_order_job_details`.
-- Two field names can legally slugify to the same string (`"Total ($)"` and `"Total (%)"`
-  both give `total`), and a name with no ASCII alphanumerics slugifies to the empty string.
-  Either would collapse columns in `remap_keys`, where the last field silently wins, so a
-  colliding or empty slug falls back to the Knack field key (`total_field_12`) and logs a
-  warning.
+- Object and field labels are editable metadata, so they never identify physical warehouse
+  objects. `object_12` remains table `object_12`; `field_73` remains column `field_73`.
+- `_kn_object_catalog` and `_kn_field_catalog` map those stable keys to current labels for
+  discovery and downstream model generation.
+- Label changes, duplicate/non-Latin labels, and names matching top-level system keys therefore
+  cannot split history or overwrite a value.
 - Knack's row id arrives as the top-level `id` key and is renamed to `record_id`, which
-  is the pipeline's primary key. That frees the `id` column for a user-defined field named
-  "ID" - common in Knack apps, which often carry their own invoice or payment numbering.
-  The key is taken from the payload, not from Knack's auto-added "Record ID" *field*, so it
+  is the pipeline's primary key. A field labelled "ID" remains under its immutable `field_N`
+  column. The key is taken from the payload, not from Knack's auto-added "Record ID" field, so it
   works identically on apps that predate that field.
-- Knack now auto-adds a `short_text` field named "Record ID" to every object, holding a copy
-  of the row id. Its slug would land on the merge key, so it is reserved and renamed to
-  `<singular>_record_id` (e.g. `worker_record_id`) - a redundant column, kept in preference
-  to a schema whose shape depends on whether any row's values happen to diverge.
 - Cleaning runs **before** the remap only, so it matches on raw Knack field keys.
-  `numeric_fields` and `default_values` are also registered under the raw name and the
-  slug, but those entries are never reached — harmless, and worth knowing before you
-  go looking for a second cleaning pass.
+  `numeric_fields` and `default_values` are registered under those raw keys only.
 - `remap_keys` falls back to the original key when no mapping exists, so an unmapped
   object still loads — with `field_NN` column names.
 
@@ -275,12 +268,12 @@ sequenceDiagram
     Knack-->>Sleuth: app metadata
     Sleuth-->>CLI: Application model
 
-    Note over CLI: derive names from app slug:<br/>db knack_{slug}_data<br/>dataset {slug}<br/>(hyphens → underscores)<br/>pipeline knack_{slug}_pipeline
+    Note over CLI,Sleuth: immutable app id names<br/>database, dataset and pipeline
 
     CLI->>DLT: dlt.pipeline(name, dataset, destination)
     CLI->>CLI: create_rest_client(app_id, api_key)
 
-    Note over CLI: the same app id drives metadata,<br/>records and naming - they cannot disagree
+    Note over CLI,Sleuth: one app id drives metadata,<br/>records and naming
 
     CLI->>Src: build_knack_resources(kn_app, client)
     Src->>Src: create_app_mappings(kn_app)
@@ -305,6 +298,7 @@ sequenceDiagram
     DLT->>Dest: load — merge / scd2 on record_id
     Dest-->>DLT: load_info
     DLT-->>CLI: load_info
+    CLI->>Dest: retire confirmed-empty / removed objects<br/>refresh object + field label catalogs
     CLI-->>Dev: run summary
 ```
 
@@ -312,11 +306,12 @@ sequenceDiagram
 
 | `--destination` | Target | Requires |
 |---|---|---|
-| `local` (default) | a DuckDB file at `$XDG_DATA_HOME/knack-elt/knack_{slug}_data.duckdb` (falling back to `~/.local/share/knack-elt/`), or wherever `--db-path` points. Deliberately not working-directory relative — one app, one warehouse, wherever the command runs | nothing — this is the zero-setup path, so a fresh install can load a Knack app straight away |
-| `motherduck` | `md:///knack_{slug}_data` | `motherduck_api_key` in the environment or `.env` |
+| `local` (default) | a DuckDB file at `$XDG_DATA_HOME/knack-elt/knack_{stable_app_id}_data.duckdb` (falling back to `~/.local/share/knack-elt/`), or wherever `--db-path` points. Deliberately not working-directory relative — one app, one warehouse, wherever the command runs | nothing — this is the zero-setup path, so a fresh install can load a Knack app straight away |
+| `motherduck` | `md:///knack_{stable_app_id}_data` | `motherduck_api_key` in the environment or `.env` |
 
-Either way the run sets `load.workers = 3` and `truncate_staging_dataset = True`, and
-writes `load_info` and the run trace back to the destination as `_load_info` and `_trace`.
+Either way the run sets `load.workers = 3` and `truncate_staging_dataset = True`, reconciles
+confirmed-empty and removed objects, and writes `_load_info`, `_trace`, `_kn_object_catalog`
+and `_kn_field_catalog` beside the data.
 
 The application id and REST API key are threaded from the CLI into the record client, so
 `--app-id` alone fully determines which app is read — metadata and records cannot disagree.
@@ -377,10 +372,10 @@ select * from flagged where latest_version
 Two traps worth stating explicitly:
 
 - **Partition by `record_id`, not by a column that looks like an id.** `record_id` is the
-  canonical Knack row id, taken from the API payload and populated on every row. `id` may
-  hold an app's own numbering, and `<singular>_record_id` is Knack's auto-added *field* -
-  a copy, but a user-editable one that can be blank on rows created before it existed.
-  Partitioning on either collapses rows into wrong groups and corrupts the flags.
+  canonical Knack row id, taken from the API payload and populated on every row. A `field_N`
+  column may hold the app's own numbering or Knack's auto-added Record ID field, but neither
+  is the merge key. Partitioning on either collapses rows into wrong groups and corrupts the
+  flags.
 - **Aggregate without `latest_version` and you double-count.** Every historical
   version of a row is still a row. A `SUM()` over the raw table sums every version
   of every record.
