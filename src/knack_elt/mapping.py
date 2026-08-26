@@ -31,6 +31,44 @@ def slugify_field_name(field_name: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', field_name.lower()).strip('_')
 
 
+def column_name_for_field(field_name, field_key, singular, used_slugs,
+                         restricted_field_names, object_name=""):
+    """The column a Knack field loads into: its slug, made unique and unreserved.
+
+    Three things can go wrong, and every fallback is re-checked rather than trusted,
+    because each one can land on exactly the name it was escaping:
+
+    - Two distinct fields slugify identically ("Total ($)" and "Total (%)" both give
+      "total"). remap_keys is last-write-wins, so one column would silently replace
+      the other.
+    - A name with no ASCII alphanumerics slugifies to "", collapsing every such field
+      into one column.
+    - The slug lands on a name the pipeline owns (`record_id`). Comparison is on the
+      *slug*: Knack's auto-added field is named "Record ID", which lowercases to
+      "record id" and only becomes "record_id" after slugification. The escape,
+      prefixing the object's singular, itself slugifies straight back to "record_id"
+      when the singular has no ASCII alphanumerics.
+
+    `field_key` is unique app-wide and always ASCII, so suffixing it terminates.
+    """
+    new_key = slugify_field_name(field_name) or field_key
+
+    if new_key in restricted_field_names:
+        renamed = slugify_field_name(f"{singular} {new_key}")
+        new_key = renamed if renamed not in restricted_field_names and renamed else f"{field_key}_{new_key}"
+
+    if new_key in used_slugs or new_key in restricted_field_names:
+        collided_with = used_slugs.get(new_key, "a name the pipeline reserves")
+        while new_key in used_slugs or new_key in restricted_field_names:
+            new_key = f"{new_key}_{field_key}"
+        logger.warning(
+            f"Field name {field_name!r} ({field_key}) on {object_name!r} slugifies onto "
+            f"{collided_with}; loading it as {new_key!r} instead."
+        )
+
+    return new_key
+
+
 def create_app_mappings(app_metadata: Application) -> tuple[
     dict[Any, dict[Any, Any]], dict[Any, Any], list[str | Any], dict[Any, Any]]:
     """
@@ -87,26 +125,9 @@ def create_app_mappings(app_metadata: Application) -> tuple[
             field_key = field.key
             field_name = field.name
             
-            # Slugify field name. Two distinct Knack fields can legally slugify to
-            # the same name ("Total ($)" and "Total (%)" both -> "total"), and a name
-            # with no ASCII alphanumerics slugifies to "". Either case would collapse
-            # columns in remap_keys, where the last field silently wins - so fall back
-            # to the Knack field key, which is unique app-wide.
-            new_key = slugify_field_name(field_name)
-            if not new_key:
-                new_key = field_key
-            # Compare the *slug*, not the raw name: Knack's auto-added field is named
-            # "Record ID", which lowercases to "record id" and only becomes "record_id"
-            # after slugification.
-            if new_key in restricted_field_names:
-                new_key = slugify_field_name(f"{singular} {new_key}") or f"{field_key}_{new_key}"
-            if new_key in used_slugs:
-                collided_with = used_slugs[new_key]
-                new_key = f"{new_key}_{field_key}"
-                logger.warning(
-                    f"Field name {field_name!r} ({field_key}) on {object_name!r} slugifies onto "
-                    f"{collided_with}'s column; loading it as {new_key!r} instead."
-                )
+            new_key = column_name_for_field(
+                field_name, field_key, singular, used_slugs, restricted_field_names, object_name
+            )
             used_slugs[new_key] = field_key
             field_mappings[object_id][field_key] = new_key
             
