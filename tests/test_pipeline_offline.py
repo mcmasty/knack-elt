@@ -241,3 +241,26 @@ def test_scd2_lifecycle_across_two_loads(tmp_path):
     assert ("r1", "Physics") in retired, "the edited record's old version should be retired"
     assert ("r2", "Chemistry") in retired, "a record deleted in Knack should be retired"
     con.close()
+
+
+def test_default_db_dir_is_stable_across_working_directories(tmp_path, monkeypatch):
+    """The default must not be CWD-relative: the same app has to keep one warehouse
+    wherever the command runs, or a record's SCD2 history silently splits in two."""
+    from knack_elt.cli import default_db_dir
+
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    first = default_db_dir()
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert default_db_dir() == first
+    assert first.is_absolute()
+    assert "tests/data" not in str(first)
+
+
+def test_default_db_dir_honours_xdg_data_home(tmp_path, monkeypatch):
+    from knack_elt.cli import default_db_dir
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    assert default_db_dir() == tmp_path / "xdg" / "knack-elt"

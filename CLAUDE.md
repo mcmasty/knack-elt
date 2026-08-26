@@ -22,16 +22,21 @@ uv run ruff check src/ tests/
 
 ### Running the Pipeline
 
-Packaged as a Typer CLI (`[project.scripts]` → `knack_elt.cli:cli`):
+Packaged as a Typer CLI (`[project.scripts]` → `knack_elt.cli:cli`) and published on PyPI as
+`knack-elt`. In this repo, work through `uv run`; the README documents the uvx/pip/clone
+routes for users.
 
 ```bash
 uv run knack-elt run-pipeline --app-id <knack_app_id>                    # local DuckDB file
 uv run knack-elt run-pipeline --app-id <id> --destination motherduck     # MotherDuck
 ```
 
-`--destination local` is the **default and deliberate**: a fresh clone must be able to load a
-Knack app with no MotherDuck account. The file goes to `./tests/data/knack_{slug}_data.duckdb`
-unless `--db-path` overrides it, and the resolved path is printed each run.
+`--destination local` is the **default and deliberate**: a fresh install must be able to load a
+Knack app with no MotherDuck account. The file goes to `default_db_dir()` —
+`$XDG_DATA_HOME/knack-elt/`, falling back to `~/.local/share/knack-elt/` — unless `--db-path`
+overrides it, and the resolved path is printed each run. **Do not make this CWD-relative
+again**: the same app must keep one warehouse wherever the command runs, or a record's SCD2
+history silently splits across directories. Two tests pin it.
 
 Other flags: `--api-key`, `--refresh-metadata` (bypass knack-sleuth's 24h metadata cache),
 `--skip-unreadable` (see the SCD2 warning below).

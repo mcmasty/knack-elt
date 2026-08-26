@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import dlt
@@ -13,7 +14,17 @@ from knack_elt.knack_dlt import build_knack_resources, create_rest_client
 cli = typer.Typer()
 console = Console()
 
-DEFAULT_LOCAL_DB_DIR = Path("tests/data")
+def default_db_dir() -> Path:
+    """Where local DuckDB files go when --db-path is not given.
+
+    A stable per-user directory, not the working directory: the same app must
+    keep one warehouse wherever the command is run. A CWD-relative default
+    silently splits a record's SCD2 history across directories, which is worse
+    than being one `--db-path` away from the location you wanted.
+    """
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "knack-elt"
 
 
 def version_callback(value: bool):
@@ -58,7 +69,8 @@ def run_pipeline(
     db_path: Path = typer.Option(
         None,
         "--db-path",
-        help=f"Local DuckDB file. Defaults to ./{DEFAULT_LOCAL_DB_DIR}/knack_{{slug}}_data.duckdb.",
+        help="Local DuckDB file. Defaults to $XDG_DATA_HOME (or ~/.local/share)"
+             "/knack-elt/knack_{slug}_data.duckdb.",
     ),
     refresh_metadata: bool = typer.Option(
         False,
@@ -100,7 +112,7 @@ def run_pipeline(
     dataset_name = kn_app.slug.replace('-', '_')
 
     if destination == "local":
-        local_db_path = (db_path or DEFAULT_LOCAL_DB_DIR / f"{dest_db_name}.duckdb").resolve()
+        local_db_path = (db_path or default_db_dir() / f"{dest_db_name}.duckdb").resolve()
         local_db_path.parent.mkdir(parents=True, exist_ok=True)
         dlt_destination = dlt.destinations.duckdb(str(local_db_path))
         destination_label = str(local_db_path)
