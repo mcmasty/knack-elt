@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        # Pinned exactly: setup-uv stopped publishing floating major tags after
+        # v7, so `@v10` does not resolve. Dependabot's github-actions ecosystem
+        # keeps this current.
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      # The suite is deliberately offline: it drives the pipeline with a fake
+      # client and synthetic app metadata, so no Knack or MotherDuck credentials
+      # are needed and CI can run on forks.
+      - name: Test
+        run: uv run pytest tests/ -q

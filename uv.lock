@@ -382,18 +382,18 @@ dev = [
 
 [[package]]
 name = "knack-sleuth"
-version = "0.1.20"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpx", extra = ["http2"] },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "typer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/69/ba/9c1a07dd5a336f2ff62ee7eb8a3a4d6f8d7765313674dda7c5e528fabf92/knack_sleuth-0.1.20.tar.gz", hash = "sha256:723e8769359520d3a2b04adb5aa97f0f48d95f16dbc24929926f49e9ae28a48f", size = 28216, upload-time = "2025-10-30T20:44:52.753Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/5e/d19e7def97c49a8153b304a202bd2069fb33e9efd49967ad90de07e1d0d0/knack_sleuth-0.7.1.tar.gz", hash = "sha256:8c3f1043845e9daf4779c7a12ea49e3e677158cf8d0907bdf16d337b405aa397", size = 77931, upload-time = "2026-08-25T02:16:39.61Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/40/15aeeeaaf5d7f4b8fa39aec2696b893f65176cda948a07d10063883937db/knack_sleuth-0.1.20-py3-none-any.whl", hash = "sha256:89cabb90bb3e5e9f8865487cf6311b05f8de3b3939f673c6ff682911b6e59b88", size = 31161, upload-time = "2025-10-30T20:44:51.222Z" },
+    { url = "https://files.pythonhosted.org/packages/15/28/ba9f66572e533c1e0b76267516b3a8d96ce272e3855ed611d35604557c05/knack_sleuth-0.7.1-py3-none-any.whl", hash = "sha256:45c0eabf121dae376effd6887e72909ad4c0191cc61f49fa9f55d9a7a234018b", size = 74583, upload-time = "2026-08-25T02:16:38.125Z" },
 ]
 
 [[package]]

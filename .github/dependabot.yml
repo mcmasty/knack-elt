@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Python dependencies. Dependabot reads pyproject.toml and keeps uv.lock in
+  # step, which matters here: a constraint like knack-sleuth>=0.1.19 already
+  # allows newer releases, so without lockfile updates the pin can sit years
+  # behind while looking satisfied.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the safe stuff; majors stay separate so they get read.
+      minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
