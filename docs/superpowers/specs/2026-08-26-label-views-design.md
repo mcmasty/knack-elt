@@ -131,10 +131,11 @@ as-is; this is verified working in DuckDB.
 | Case | Rule |
 | --- | --- |
 | Two objects labelled `Classes` | **Both** become `Classes__object_3` / `Classes__object_7`. Never one keeps the plain name. |
+| Two objects labelled `Classes` and `classes` | Same rule. Identifiers are compared **folded**, not as exact strings — see below |
 | A label equals another object's `…_history` name | Base names are reserved in both forms before collisions are computed |
-| Empty or whitespace-only label | Falls back to the object key (`object_3`) |
+| Empty or whitespace-only label | Falls back to the object key for an object, the field key for a field |
 | Two fields in one object share a label | Both suffixed with `__field_N` |
-| Field labelled `record_id`, `valid_from`, `valid_to`, `is_live_in_knack` | Suffixed with `__field_N`; passthrough columns always win |
+| Field labelled `record_id`, `valid_from`, `valid_to`, `is_live_in_knack` (in any casing) | Suffixed with `__field_N`; passthrough columns always win |
 
 The "both get suffixed" rule is the one that matters. If the first `Classes` kept the plain
 name, then adding a second object with the same label would silently move an existing view and
@@ -143,6 +144,37 @@ the object it belongs to, never on what else happens to exist.
 
 All four passthrough names are reserved in **both** views, even though `valid_from` and friends
 only appear in the history view, so a given field has the same column name in both.
+
+### Comparison is folded; emission is verbatim
+
+This is the rule everything above depends on, and getting it wrong is silent rather than loud.
+
+DuckDB folds identifiers ASCII-case-insensitively **even when quoted**. `"Classes"` and
+`"classes"` are the same catalog object, and `CREATE OR REPLACE` therefore *replaces* rather
+than errors. Verified locally: creating both leaves exactly one view, with no warning. Column
+aliases are worse — DuckDB does not error on a duplicate alias, it silently renames the later
+one, so a field labelled `Record_ID` beside the `record_id` passthrough yields a column called
+`Record_ID_1`. Under exact-string comparison the reservation rule never fires and nothing
+reports a problem.
+
+So every comparison in this design — view-name collisions, `…_history` reservations, per-object
+column aliases, the four passthrough reservations — is made on an **ASCII-lowercased fold** of
+the name, while the name actually emitted stays verbatim. Python's `str.lower()` also folds
+non-ASCII (`ÉTÉ` and `été` are distinct views in DuckDB but equal under `.lower()`), so it
+over-collides. That direction is safe: an over-collision costs an unnecessary `__object_N`
+suffix, where an under-collision costs a view.
+
+### Final uniqueness is asserted, not assumed
+
+The rules above are not trusted to be exhaustive. Legal Knack apps can reach past them — an
+object labelled literally `Classes__object_7` while two other objects are both labelled
+`Classes`, or an object labelled `object_3` beside an object whose empty label falls back to
+`object_3`.
+
+So the generator computes **every** candidate name — verbatim, fallback, suffixed, `…_history`
+forms, and passthrough columns — and then asserts that the folded set is globally unique. A
+residual collision fails the plan loudly, naming both contributors, before any SQL runs. Every
+case nobody foresaw becomes a visible error instead of a silently missing view.
 
 ### Columns that do not exist
 
@@ -175,9 +207,16 @@ right: if object_3 is renamed to `Classes` while object_9's view is *currently* 
 any create-then-drop order transiently clobbers one of them. A full rebuild has no intermediate
 states to reason about, is trivially idempotent, and costs nothing — views are metadata.
 
-Only views are dropped, and only inside `{labels}`. Tables are never touched, and no other
-schema is ever read or written. The schema is documented as knack-elt-managed: hand-authored
-objects there will be removed.
+Only views are dropped, and only inside `{labels}`, and only in the current database — the drop
+set is enumerated with `database_name = current_database()` as well as `schema_name`, because a
+MotherDuck connection attaches several databases and `duckdb_views()` spans all of them. Tables
+are never touched, and no other schema is ever read or written.
+
+The schema is knack-elt-managed: hand-authored **views** there are removed on every apply. A
+hand-authored **table** is not, and cannot be — `DROP VIEW` refuses a table and `CREATE OR
+REPLACE VIEW` will not replace one — so if any label folds onto its name the apply fails, rolls
+back, and leaves the previous view set intact. The error names the offending object and says it
+must be dropped by hand.
 
 ## CLI
 
@@ -204,8 +243,22 @@ Plan for app_xxx_a1b2c3d4_labels:
 Apply? [y/N]
 ```
 
+Labels differing only in trailing whitespace produce distinct, visually identical view names, so
+the plan renders every name with repr-style quoting. Whitespace is never trimmed for emission —
+only, like case, for comparison.
+
 `--yes` skips the prompt for scripted use. A plan with no changes reports so and exits 0
 without prompting. Exits 1 if any view fails to build.
+
+If `_kn_object_catalog` or `_kn_field_catalog` is missing, the command is a hard error naming the
+resolved database path. A warehouse that has never been synced, or a mistyped `--db-path`, must
+not read as "zero objects" — under a full rebuild that would drop the entire view layer and
+create nothing.
+
+That case is also guarded structurally: a plan that drops views while creating none requires an
+explicit confirmation **even under `--yes`**. One valve covers the wrong-path case, a genuinely
+emptied app, and the narrow MotherDuck window where a concurrent `run-pipeline` is mid-`replace`
+on the catalogs. Locally the DuckDB file lock makes that race a clean failure instead.
 
 When stdin is not a terminal and `--yes` was not given, the command prints the plan and exits 1
 without applying it. A cron job that would silently rename an analyst's views because nobody was
@@ -218,8 +271,19 @@ know what anything used to be called.
 
 ### `run-pipeline`
 
-Gains no flags and builds no views. After the catalogs are written it compares the view names
-the catalog implies against the views that exist, and reports:
+Gains no flags and builds no views. After the catalogs are written it calls `plan_label_views()`
+and reports if the plan is non-empty.
+
+It must call the planner rather than deriving names from the catalog directly, for two reasons.
+First, a name-only comparison misses **field** renames entirely: renaming a field changes a
+column alias inside a view's SQL, not any view name, so a warehouse could sit indefinitely with
+every column stale while the drift check reports nothing. The plan compares generated SQL
+against `duckdb_views().sql`, so a field rename, a newly-populated field, and an object rename
+all surface. Second, the planner's skip rules (no physical table, no physical column) must apply
+here too — otherwise a catalog-only object implies a view that will never exist, and the check
+reports phantom drift on every run with no way to clear it.
+
+Reported as:
 
 ```
 Label drift: 2 objects renamed since views were built
@@ -265,10 +329,33 @@ DuckDB files — the existing pattern. Every case is a shape a fresh Knack app c
 - Applying twice with no Knack change is a no-op producing an identical view set
 - A view rename that swaps two names between objects applies correctly (the ordering hazard)
 - `run-pipeline` on a warehouse with no `_labels` schema reports no drift and creates nothing
+- Objects labelled `Classes` and `classes` both get suffixed; both views exist afterward
+- Two fields labelled `Name` and `name` get distinct, non-mangled column names
+- A field labelled `Record_ID` does not displace or shadow the `record_id` passthrough
+- An object labelled `classes_HISTORY` does not collide with `Classes`'s history view
+- A label that survives every rule but still collides fails the plan loudly, before any SQL runs
+- A renamed **field** surfaces as drift in `run-pipeline` (the name-only blind spot)
+- A catalog-only object with no physical table reports no drift after a refresh — no phantom
+- `refresh-views` against a never-synced warehouse errors and drops nothing
+- A plan that drops views and creates none refuses to apply under `--yes`
+- Non-TTY without `--yes` prints the plan and exits 1 without applying
+- A failed apply leaves the previous view set and its comments intact
+- A hand-authored table in the `_labels` schema fails the apply with a message naming it
+- A full `run-pipeline` sync against a warehouse where `_labels` **does** exist leaves the SCD2
+  tables byte-identical — views must not obstruct dlt schema evolution or reconciliation
 
 ## Open risk
 
-`COMMENT ON VIEW` and `duckdb_views().comment` are verified against local DuckDB. They are
-**not** verified against MotherDuck, which has never been executed in this project at all. The
-degradation is graceful by construction — missing comments cost rename attribution in the plan
-display and nothing else — but the first MotherDuck run should confirm it rather than assume.
+`COMMENT ON VIEW`, `duckdb_views().comment`, and transactional rollback of a failed apply are
+all verified against local DuckDB. None is verified against MotherDuck, which has never been
+executed in this project at all.
+
+Comments degrade gracefully by construction — losing them costs rename attribution in the plan
+display and nothing else. **Transactions do not.** The promise that a failed apply leaves the
+previous view set intact rides entirely on DDL rollback behaving as it does locally; if it does
+not, a failed apply on MotherDuck could leave the layer half-built. MotherDuck's documentation
+claims parity for both, but that is secondhand. The first MotherDuck run should confirm it, and
+until then the safe recovery is simply to re-run `refresh-views` — the rebuild is idempotent.
+
+`refresh-views --destination motherduck` still needs `motherduck_api_key`. "No credentials" above
+means no *Knack* API key: the command never contacts Knack.
