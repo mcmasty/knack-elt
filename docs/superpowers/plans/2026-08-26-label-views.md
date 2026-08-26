@@ -1104,7 +1104,7 @@ git commit -m "Document the label view layer"
 
 ## Done when
 
-- `uv run pytest tests/ -q` passes with **at least 70 tests** (44 baseline + the new suite)
+- `uv run pytest tests/ -q` passes with **at least 79 tests** (44 baseline + the label suite)
 - `uv run ruff check src/ tests/` is clean
 - `uv run knack-elt refresh-views --help` renders
 - Nothing in `src/` names an app, slug, object key, or field

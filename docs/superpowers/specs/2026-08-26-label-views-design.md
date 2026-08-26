@@ -310,9 +310,10 @@ View generation runs after the load has already committed. It cannot corrupt his
 ever issues `CREATE SCHEMA`, `CREATE VIEW`, and `DROP VIEW` against a schema that holds nothing
 but generated views.
 
-- `refresh-views` exits 1 if any view fails, after attempting the rest, and lists each failure
-  with the object it belongs to. The transaction means a failed apply leaves the previous view
-  set in place rather than a half-built one.
+- `refresh-views` exits 1 on the first view that fails. It does **not** attempt the rest and
+  there is no per-view failure list: the apply is one transaction, so the first error rolls the
+  whole rebuild back and leaves the previous view set — comments included — exactly as it was.
+  Fail-closed is the point; a half-built layer is the state this design refuses to produce.
 - The drift check inside `run-pipeline` is wrapped so it can never fail the command. A
   successful load that cannot be described is still a successful load.
 
@@ -357,8 +358,13 @@ DuckDB files — the existing pattern. Every case is a shape a fresh Knack app c
 all verified against local DuckDB. None is verified against MotherDuck, which has never been
 executed in this project at all.
 
-Comments degrade gracefully by construction — losing them costs rename attribution in the plan
-display and nothing else. **Transactions do not.** The promise that a failed apply leaves the
+Comments degrade less gracefully than first designed. Losing them costs rename attribution in
+the plan display — and, less obviously, the ability to notice that **two objects swapped
+labels**. In a swap both view names still exist and both column lists can be identical, so
+neither the name diff nor the column diff sees anything; only the owner stamped on each view
+reveals that `"Alpha"` is now built from the object that used to be `"Beta"`. Without comments
+that case reads as up to date. It is narrow, and a manual `refresh-views` still fixes it, but
+it is not display-only. **Transactions degrade worse still.** The promise that a failed apply leaves the
 previous view set intact rides entirely on DDL rollback behaving as it does locally; if it does
 not, a failed apply on MotherDuck could leave the layer half-built. MotherDuck's documentation
 claims parity for both, but that is secondhand. The first MotherDuck run should confirm it, and
