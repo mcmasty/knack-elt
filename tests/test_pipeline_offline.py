@@ -12,6 +12,7 @@ from dlt.pipeline.exceptions import PipelineStepFailed
 from knack_sleuth.models import KnackAppMetadata
 
 from knack_elt.knack_dlt import (
+    MalformedRecord,
     RecordCountShortfall,
     build_knack_resources,
     reconcile_scd2_tables,
@@ -426,6 +427,33 @@ class _FakeResponse:
 
 def _one_object_app():
     return make_app([make_object("object_1", "A", [("field_1", "X", "short_text")])])
+
+
+def test_record_without_an_id_aborts_even_with_no_reported_total(tmp_path):
+    """Knack always assigns an id, so a record without one is a malformed payload.
+    Skipping it would silently shrink the batch, and when the envelope carries no
+    total_records nothing else would notice."""
+    client = CountingClient(
+        {"object_1": [{"id": "1", "field_1": "a"}, {"field_1": "orphan"}]},
+        {"object_1": None},
+    )
+    with pytest.raises(PipelineStepFailed) as exc:
+        load(_one_object_app(), client, tmp_path / "t.duckdb")
+    chain, err = [], exc.value
+    while err is not None:
+        chain.append(type(err))
+        err = err.__cause__ or err.__context__
+    assert MalformedRecord in chain, chain
+
+
+def test_record_without_an_id_is_not_swallowed_by_skip_unreadable(tmp_path):
+    """--skip-unreadable covers a 403 before any row is yielded, nothing else."""
+    client = CountingClient(
+        {"object_1": [{"id": "1", "field_1": "a"}, {"field_1": "orphan"}]},
+        {"object_1": None},
+    )
+    with pytest.raises(PipelineStepFailed):
+        load(_one_object_app(), client, tmp_path / "t.duckdb", skip_unreadable=True)
 
 
 def test_shortfall_against_total_records_aborts(tmp_path):

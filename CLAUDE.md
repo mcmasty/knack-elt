@@ -83,7 +83,9 @@ previously ended up pointing at different apps.
 - `RECORD_KEY` (`record_id`): the merge key. Knack's row id arrives as the payload's top-level
   `id` and is renamed in the resource before anything else touches the row. **Take it from the
   payload, never from Knack's auto-added "Record ID" field** — the payload key exists on every
-  app, the field only on ones Knack has migrated.
+  app, the field only on ones Knack has migrated. A row arriving without `id` raises
+  `MalformedRecord`: skipping it would shrink the batch, and when the envelope omits
+  `total_records` the shortfall check cannot catch what the skip removed.
 
 **mapping.py** — field cleaning metadata and stable mapping
 - `create_app_mappings(app_metadata: Application)`: takes a knack-sleuth `Application` (not raw
