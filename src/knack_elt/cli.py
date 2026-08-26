@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+from hashlib import sha256
 from pathlib import Path
 
 import dlt
@@ -10,7 +12,11 @@ from rich.table import Table
 
 from knack_elt import __version__
 from knack_elt.config import settings
-from knack_elt.knack_dlt import build_knack_resources, create_rest_client
+from knack_elt.knack_dlt import (
+    build_knack_resources,
+    create_rest_client,
+    reconcile_scd2_tables,
+)
 
 # pretty_exceptions_show_locals is already off by default in Typer >= 0.17, but the
 # pin is a floor: an unhandled exception must never print the API key or the
@@ -31,6 +37,45 @@ def default_db_dir() -> Path:
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "share"
     return base / "knack-elt"
+
+
+def stable_app_identifier(app_id: str) -> str:
+    """A filesystem/SQL-safe identity derived from the immutable Knack app id."""
+    readable = re.sub(r"[^a-z0-9]+", "_", app_id.lower()).strip("_")[:32] or "app"
+    digest = sha256(app_id.encode()).hexdigest()[:8]
+    return f"app_{readable}_{digest}"
+
+
+def legacy_db_path(slug: str, directory: Path) -> Path:
+    """Where releases before stable identities put this app's local warehouse.
+
+    Naming moved from the editable slug to `stable_app_identifier()`, which starts a
+    new physical namespace on purpose - the old file is not migrated, and nothing in
+    the new pipeline can see it. Point at it so an upgrade does not look like data
+    loss.
+    """
+    return directory / f"knack_{slug.replace('-', '_')}_data.duckdb"
+
+
+def schema_catalog_rows(kn_app):
+    """Current human-readable labels for the stable physical object/field keys."""
+    objects = [
+        {"object_id": obj.key, "object_name": obj.name, "table_name": obj.key}
+        for obj in kn_app.objects
+    ]
+    fields = [
+        {
+            "object_id": obj.key,
+            "object_name": obj.name,
+            "field_key": field.key,
+            "field_name": field.name,
+            "column_name": field.key,
+            "field_type": field.type,
+        }
+        for obj in kn_app.objects
+        for field in obj.fields
+    ]
+    return objects, fields
 
 
 def version_callback(value: bool):
@@ -76,7 +121,7 @@ def run_pipeline(
         None,
         "--db-path",
         help="Local DuckDB file. Defaults to $XDG_DATA_HOME (or ~/.local/share)"
-             "/knack-elt/knack_{slug}_data.duckdb.",
+             "/knack-elt/knack_{stable_app_id}_data.duckdb.",
     ),
     refresh_metadata: bool = typer.Option(
         False,
@@ -117,17 +162,26 @@ def run_pipeline(
 
     kn_app = load_app_metadata(app_id=final_app_id, refresh=refresh_metadata).application
 
-    # Slugs commonly contain dashes; identifiers downstream should not.
-    slug = kn_app.slug.replace('-', '_')
-    dest_db_name = f"knack_{slug}_data"
-    dlt_pipeline_name = f"knack_{slug}_pipeline"
-    dataset_name = slug
+    # App slugs are editable display metadata. All physical identities derive from
+    # the immutable application id so a URL rename cannot split SCD2 history.
+    app_identifier = stable_app_identifier(final_app_id)
+    dest_db_name = f"knack_{app_identifier}_data"
+    dlt_pipeline_name = f"knack_{app_identifier}_pipeline"
+    dataset_name = app_identifier
 
     if destination == "local":
         local_db_path = (db_path or default_db_dir() / f"{dest_db_name}.duckdb").resolve()
         local_db_path.parent.mkdir(parents=True, exist_ok=True)
         dlt_destination = dlt.destinations.duckdb(str(local_db_path))
         destination_label = str(local_db_path)
+        legacy_path = legacy_db_path(kn_app.slug, local_db_path.parent)
+        if legacy_path != local_db_path and legacy_path.exists():
+            console.print(
+                f"[bold yellow]Note:[/bold yellow] a slug-named warehouse from an earlier "
+                f"release is still at {legacy_path}. Physical names now derive from the "
+                f"immutable app id, so this run starts a fresh history at {local_db_path} "
+                f"and leaves the old file untouched."
+            )
     else:
         local_db_path = None
         dlt_destination = dlt.destinations.motherduck(
@@ -140,6 +194,7 @@ def run_pipeline(
     summary.add_column(style="cyan bold")
     summary.add_row("App", f"{kn_app.name} ({final_app_id})")
     summary.add_row("Slug", kn_app.slug)
+    summary.add_row("Stable ID", app_identifier)
     summary.add_row("Objects", str(len(kn_app.objects)))
     summary.add_row("Destination", destination_label)
     summary.add_row("Dataset", dataset_name)
@@ -157,16 +212,44 @@ def run_pipeline(
     )
 
     client = create_rest_client(app_id=final_app_id, api_key=final_api_key)
+    extraction_status = {}
     load_info = knack_dlt_pipeline.run(
-        build_knack_resources(kn_app, client, skip_unreadable=skip_unreadable)
+        build_knack_resources(
+            kn_app,
+            client,
+            skip_unreadable=skip_unreadable,
+            extraction_status=extraction_status,
+        )
     )
+    data_trace = knack_dlt_pipeline.last_trace
+
+    reconcile_scd2_tables(knack_dlt_pipeline, kn_app, extraction_status)
 
     console.print(load_info)
     console.print(f"Elapsed: {(load_info.finished_at - load_info.started_at).in_words()}")
 
-    # Keep the run's own bookkeeping alongside the data.
+    # Physical tables/columns use immutable keys. Keep the current labels beside
+    # them so analysts can discover the schema without making labels identifiers.
+    object_catalog, field_catalog = schema_catalog_rows(kn_app)
+    if object_catalog:
+        knack_dlt_pipeline.run(
+            object_catalog, table_name="_kn_object_catalog", write_disposition="replace"
+        )
+    elif "_kn_object_catalog" in knack_dlt_pipeline.default_schema.tables:
+        with knack_dlt_pipeline.sql_client() as sql_client:
+            sql_client.truncate_tables("_kn_object_catalog")
+    if field_catalog:
+        knack_dlt_pipeline.run(
+            field_catalog, table_name="_kn_field_catalog", write_disposition="replace"
+        )
+    elif "_kn_field_catalog" in knack_dlt_pipeline.default_schema.tables:
+        with knack_dlt_pipeline.sql_client() as sql_client:
+            sql_client.truncate_tables("_kn_field_catalog")
+
+    # Keep the data run's own bookkeeping alongside the data. Capture the trace
+    # before loading these bookkeeping rows so `_trace` describes the actual sync.
     knack_dlt_pipeline.run([load_info], table_name="_load_info")
-    knack_dlt_pipeline.run([knack_dlt_pipeline.last_trace], table_name="_trace")
+    knack_dlt_pipeline.run([data_trace], table_name="_trace")
 
 
 if __name__ == "__main__":

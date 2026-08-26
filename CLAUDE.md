@@ -41,9 +41,10 @@ history silently splits across directories. Two tests pin it.
 Other flags: `--api-key`, `--refresh-metadata` (bypass knack-sleuth's 24h metadata cache),
 `--skip-unreadable` (see the SCD2 warning below).
 
-**Naming** — everything derives from the app slug resolved via `knack_sleuth.load_app_metadata()`:
-database `knack_{slug}_data`, pipeline `knack_{slug}_pipeline`, dataset `{slug}` with dashes
-replaced by underscores.
+**Naming** — physical identities never derive from editable labels. `stable_app_identifier()`
+derives the database, pipeline and dataset from the immutable app id; object tables use
+`object_N`; field columns use `field_N`. Current labels live in `_kn_object_catalog` and
+`_kn_field_catalog`.
 
 ## Configuration
 
@@ -60,7 +61,7 @@ The CLI validates that an app id and API key are present before doing any work.
 1. **Metadata**: `load_app_metadata(app_id=...)` returns a validated knack-sleuth `Application`
 2. **Extract**: `create_rest_client(app_id, api_key)` builds a `RESTClient`; one dlt resource per
    Knack object pages records at 1000/page in `format=raw`
-3. **Map**: `create_app_mappings()` turns Knack field keys into slugified column names
+3. **Map**: `create_app_mappings()` keeps immutable Knack field keys as physical columns
 4. **Transform**: one dlt transformer per object cleans values, then remaps keys
 5. **Load**: merge with the SCD2 strategy, keyed on `record_id`
 
@@ -71,37 +72,25 @@ previously ended up pointing at different apps.
 ### Key Components
 
 **knack_dlt.py** — generic pipeline building blocks
-- `build_knack_resources(kn_app, client, skip_unreadable=False)`: `@dlt.source(max_table_nesting=0)`
+- `build_knack_resources(kn_app, client, skip_unreadable=False, extraction_status=None)`:
+  `@dlt.source(max_table_nesting=0)`
   yielding one `resource | transformer` pair per Knack object
 - `get_knack_table_data()`: dlt resource factory; resource named `table_{object_key}`
 - `get_remap_transformer()`: dlt transformer factory; resource named `remap_{object_key}`,
   destination table set via `table_name=`
 - `LINEAGE_TABLE_NAME` / `LINEAGE_OBJECT_ID` (`_kn_table_name`, `_kn_object_id`): stamped on every
-  row. Underscore-prefixed on purpose — a Knack field named "Table Name" slugifies to `table_name`
-  and would otherwise be overwritten by the pipeline's own bookkeeping.
+  row. Underscore-prefixed on purpose; user fields remain under `field_N` keys.
 - `RECORD_KEY` (`record_id`): the merge key. Knack's row id arrives as the payload's top-level
   `id` and is renamed in the resource before anything else touches the row. **Take it from the
   payload, never from Knack's auto-added "Record ID" field** — the payload key exists on every
   app, the field only on ones Knack has migrated.
 
-**mapping.py** — field and object mapping
+**mapping.py** — field cleaning metadata and stable mapping
 - `create_app_mappings(app_metadata: Application)`: takes a knack-sleuth `Application` (not raw
-  API JSON) and returns `field_mappings` (object_id → field_key → slug), `object_mappings`,
+  API JSON) and returns `field_mappings` (object_id → field_key → field_key), `object_mappings`,
   `numeric_fields`, `default_values`
-- `slugify_field_name()`: `re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')` — **can return `""`**
-- Collision handling: two legal Knack field names can slugify identically (`"Total ($)"` and
-  `"Total (%)"` → `total`), and a name with no ASCII alphanumerics slugifies to `""`. Either
-  collapses columns in `remap_keys`, where the last field silently wins, so a colliding or empty
-  slug falls back to the field key (`total_field_12`) and logs a warning. Keep it that way.
-- `restricted_field_names` reserves `record_id` only. `id` is deliberately **not** reserved:
-  since the row id loads as `record_id`, a user field named "ID" keeps the `id` column it was
-  named for (three AV/E objects rely on this). Knack auto-adds a `short_text` "Record ID" field
-  to every object, which slugifies onto the merge key, so it is renamed `<singular>_record_id`.
-  Reservation compares the **slug**, not the raw name — `"Record ID".lower()` is `"record id"`.
-- `column_name_for_field()` resolves every column name. Every fallback is **re-checked**, not
-  trusted: the reserved-name escape (`<singular>_record_id`) can slugify straight back to
-  `record_id` when the singular has no ASCII alphanumerics, and the collision escape
-  (`{slug}_{field_key}`) is a name a field can already hold.
+- Labels are deliberately not physical identifiers. This prevents label renames and collisions
+  with top-level Knack user-system keys such as `account_status` from dropping data.
 - `NUMERIC_FIELD_TYPES` drives empty-string→NULL cleaning: `number`, `currency`, `link`,
   `date_time`, `auto_increment`, `count`, `sum`, `min`, `max`, `average`, `equation`, `rating`.
   Omitting a type means that column types as VARCHAR full of `''` — add new types here.
@@ -121,12 +110,8 @@ are keyed on raw Knack field keys *only*. Do not re-register them under the slug
 those entries can never match a row. There is deliberately no JSON-string cleaning: `format=raw`
 returns rich fields as dicts and `max_table_nesting=0` leaves dlt to serialise them.
 
-**Duplicate table names**: `destination_table_name()` dedupes on the name **dlt will actually
-create**, not the raw Knack object name — dlt snake_cases it afterwards, so `Order Items` and
-`order-items` both become `order_items`, and any name without ASCII alphanumerics becomes `x`.
-A shared table is not cosmetic: each run's SCD2 merge retires the other object's rows as
-deleted-in-Knack. It falls back to the object key, and rejects names that normalize to empty
-or to a leading underscore (dlt owns that prefix).
+**Stable table names**: `destination_table_name()` always returns the immutable object key.
+Duplicate, renamed and non-Latin labels cannot change or collide with physical tables.
 
 ### SCD2 — two traps
 
@@ -136,19 +121,23 @@ or to a leading underscore (dlt owns that prefix).
    `<singular>_record_id` (a user-editable copy).
 2. **A partial extraction is worse than a failed one.** If a resource yields some rows and then
    errors, dlt sees a successful load and the merge retires every row missing from that partial
-   batch — silent history corruption. This is why `--skip-unreadable` only swallows failures that
-   occur *before any row is yielded*; a mid-stream failure always re-raises. Preserve that
-   invariant in any error-handling change.
+   batch — silent history corruption. `--skip-unreadable` only swallows an HTTP 403 before any
+   row is yielded; authentication, rate-limit, network, server and mid-stream failures re-raise.
 
-Known gaps, both documented in the README, neither cheaply fixable:
-- An object returning zero records produces no load package at all, so previously loaded rows
-  stay marked live. Emptying an object in Knack is invisible to the flag.
+After a successful load, `reconcile_scd2_tables()` explicitly closes live rows for objects that
+reported zero records or disappeared from metadata. It is scoped to the pipeline's own
+dataset; label-named tables from older releases live in another database entirely and are
+left alone.
+
+Known source limitation, documented in the README:
 - Knack's record API pages by number, not cursor, so a record inserted or deleted mid-extraction
   shifts page boundaries and can be missed from that batch. **Detected, not prevented**: each page
   envelope carries `total_records`, and `get_knack_table_data` raises `RecordCountShortfall` when
   fewer records arrive than Knack reported throughout, which aborts before the merge can retire
   them. The comparison floor is `min(first_total, last_total)` — the count moves under us, and the
-  lower endpoint is what we can be sure was present the whole time. `--skip-unreadable` explicitly
+  lower endpoint is what we can be sure was present the whole time. This is best-effort: equal-count
+  churn can evade the check, so production runs should target quiet source periods.
+  `--skip-unreadable` explicitly
   does **not** swallow this. If the envelope omits the count, reconciliation is skipped rather
   than failing closed.
 - Not yet done: `sort_field=<Record ID field key>&sort_order=asc` would stop *insertions* from
@@ -172,5 +161,6 @@ whenever the markdown changes. When editing any mermaid block — in `docs/ARCHI
 `README.md`, which has one of its own — render it with mermaid-cli before committing; parse
 errors and unreadable layouts are invisible in the markdown source.
 
-Docs are public-facing for a licensed repo: use generic example names (`acme_ops`, `{slug}`),
+Docs are public-facing for a licensed repo: use generic example names (`acme_ops`,
+`{stable_app_id}`),
 never a real client's app, schema, or field names.

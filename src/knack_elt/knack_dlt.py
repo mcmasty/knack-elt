@@ -6,6 +6,8 @@ passed in by the caller (see `cli.py`).
 import logging
 
 import dlt
+import httpx
+import requests
 from dlt.common.normalizers.naming.snake_case import NamingConvention
 from dlt.sources.helpers.rest_client import RESTClient
 from dlt.sources.helpers.rest_client.auth import APIKeyAuth
@@ -49,8 +51,7 @@ def _reported_total(page) -> int | None:
     except Exception:
         return None
 
-# dlt snake_cases whatever table name we hand it, *after* we choose it. Deduping on
-# the raw Knack object name is therefore not enough.
+# Validate stable object keys with the same naming convention dlt applies later.
 _NAMING = NamingConvention()
 
 
@@ -68,29 +69,38 @@ def _normalized_table_name(name: str) -> str | None:
 
 
 def destination_table_name(object_name: str, object_key: str, seen: dict) -> str:
-    """Pick a table name that is still unique after dlt normalizes it.
+    """Return the stable physical table name for a Knack object.
 
-    Knack object names are not unique, and normalization collapses more of them than
-    the raw strings suggest: "Order Items" and "order-items" both become
-    `order_items`, and *any* name with no ASCII alphanumerics becomes `x` - so two
-    unrelated non-Latin objects would share one table. That is not merely untidy:
-    each run's SCD2 merge would retire the other object's rows as deleted-in-Knack,
-    silently and cumulatively.
-
-    Falls back to the Knack object key, which is unique app-wide and always ASCII.
+    Object labels are editable and non-unique. Knack object keys are immutable,
+    app-wide unique, and safe after dlt normalization, so labels are kept only as
+    lineage metadata and never used as physical identifiers.
     """
-    for candidate in (object_name, f"{object_name}_{object_key}", object_key):
-        normalized = _normalized_table_name(candidate)
-        if normalized and normalized not in seen:
-            if candidate != object_name:
-                logger.warning(
-                    f"Object name {object_name!r} ({object_key}) normalizes to a table "
-                    f"already taken by {seen.get(_normalized_table_name(object_name))}; "
-                    f"loading it as {candidate!r}"
-                )
-            seen[normalized] = object_key
-            return candidate
-    raise ValueError(f"Could not derive a unique table name for {object_key}")
+    normalized = _normalized_table_name(object_key)
+    if not normalized or normalized in seen:
+        raise ValueError(f"Knack object key is not a unique usable table name: {object_key!r}")
+    seen[normalized] = object_key
+    return object_key
+
+
+# dlt's RESTClient is requests-based, so a forbidden page raises requests' HTTPError.
+# httpx is matched too because the client is injected by the caller and knack-sleuth
+# uses httpx; getting this tuple wrong turns --skip-unreadable into a no-op.
+_HTTP_STATUS_ERRORS = (requests.exceptions.HTTPError, httpx.HTTPStatusError)
+
+
+def _is_forbidden_error(error: Exception) -> bool:
+    """Whether an exception chain contains an HTTP 403 response."""
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _HTTP_STATUS_ERRORS):
+            # requests attaches no response when the failure was not a real reply.
+            response = getattr(current, "response", None)
+            if response is not None:
+                return response.status_code == 403
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def create_rest_client(app_id: str, api_key: str) -> RESTClient:
@@ -116,13 +126,19 @@ def create_rest_client(app_id: str, api_key: str) -> RESTClient:
     )
 
 
-def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
+def get_knack_table_data(
+    table_name, object_id, client, skip_unreadable=False, extraction_status=None
+):
     @dlt.resource(name=f"table_{object_id}",
                   write_disposition={"disposition": "merge", "strategy": "scd2"},
                   primary_key=RECORD_KEY,
                   columns={RECORD_KEY: {"merge_key": False}}  # to work around a possible bug in DLT
                   )
     def table_data():
+        status = None
+        if extraction_status is not None:
+            status = extraction_status.setdefault(object_id, {})
+            status.update(completed=False, skipped=False, yielded=0, totals=[])
         logger.info(f"Processing table: {table_name} ({object_id})")
         kn_params = {'rows_per_page': 1000, 'format': 'raw'}
         url = f"/objects/{object_id}/records"
@@ -134,6 +150,8 @@ def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
                 reported = _reported_total(page)
                 if reported is not None:
                     totals.append(reported)
+                    if status is not None:
+                        status["totals"] = list(totals)
                 for row in page:
                     if row.get('id') is None:
                         logger.warning(
@@ -150,6 +168,8 @@ def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
                     row[LINEAGE_OBJECT_ID] = object_id
 
                     yielded += 1
+                    if status is not None:
+                        status["yielded"] = yielded
                     yield row
 
             # Knack pages by number, not by cursor, so a record inserted or deleted
@@ -172,12 +192,16 @@ def get_knack_table_data(table_name, object_id, client, skip_unreadable=False):
                 f"{table_name}: {yielded} records"
                 + (f" (Knack reported {totals[-1]})" if totals else "")
             )
+            if status is not None:
+                status.update(completed=True, yielded=yielded, totals=list(totals))
         except Exception as e:
             # Swallowing an error *after* rows were yielded would hand dlt a
             # successful partial extraction, and the SCD2 merge would retire every
             # row missing from that partial batch. Only a zero-yield failure is safe
             # to skip.
-            if skip_unreadable and yielded == 0 and not isinstance(e, RecordCountShortfall):
+            if skip_unreadable and yielded == 0 and _is_forbidden_error(e):
+                if status is not None:
+                    status.update(skipped=True, error=str(e))
                 logger.error(f"Skipping unreadable object {table_name} ({object_id}): {e}")
                 return
             logger.error(f"Error fetching data for table {table_name}: {e}")
@@ -229,19 +253,29 @@ def get_remap_transformer(table_name, object_id, field_mappings, numeric_fields,
 
 
 @dlt.source(max_table_nesting=0)
-def build_knack_resources(kn_app: Application, client: RESTClient, skip_unreadable: bool = False):
+def build_knack_resources(
+    kn_app: Application,
+    client: RESTClient,
+    skip_unreadable: bool = False,
+    extraction_status: dict | None = None,
+):
     """One resource+transformer pair per Knack object, chained with the pipe operator."""
     resources = []
     field_mappings, _object_mappings, numeric_fields, default_values = create_app_mappings(kn_app)
 
-    # Resource names key off obj.key (globally unique in Knack); destination table
-    # names come from the object name, which is NOT unique even before dlt normalizes
-    # it - see destination_table_name.
+    # Resource and destination names both key off obj.key. Human labels are mutable
+    # metadata and cannot safely identify a physical SCD2 table.
     seen_tables = {}
     for obj in kn_app.objects:
         table_name = destination_table_name(obj.name, obj.key, seen_tables)
 
-        table_resource = get_knack_table_data(table_name, obj.key, client, skip_unreadable=skip_unreadable)
+        table_resource = get_knack_table_data(
+            table_name,
+            obj.key,
+            client,
+            skip_unreadable=skip_unreadable,
+            extraction_status=extraction_status,
+        )
         transformer_resource = get_remap_transformer(
             table_name, obj.key, field_mappings, numeric_fields, default_values
         )
@@ -249,3 +283,70 @@ def build_knack_resources(kn_app: Application, client: RESTClient, skip_unreadab
 
     logger.info(f"Built {len(resources)} resources for {kn_app.name}")
     return resources
+
+
+def reconcile_scd2_tables(pipeline, kn_app: Application, extraction_status: dict) -> list[str]:
+    """Retire live rows for objects Knack confirmed empty or dropped from metadata.
+
+    dlt creates no load job for an empty resource, so its normal SCD2 merge cannot
+    retire the rows already present. Objects removed from metadata have no resource
+    at all. Reconcile only after the extraction/load succeeds, and only treat an
+    object as empty when Knack explicitly reported zero records.
+
+    Deliberately scoped to this pipeline's own dataset. Tables from releases that
+    named tables after mutable labels live in a different database and dataset (see
+    the README migration note); they are unreachable from here and are left alone
+    rather than guessed at.
+    """
+    current_tables = {obj.key: destination_table_name(obj.name, obj.key, {}) for obj in kn_app.objects}
+    retired = []
+    schema = pipeline.default_schema
+
+    with pipeline.sql_client() as client:
+        object_column = client.escape_column_name(LINEAGE_OBJECT_ID)
+        valid_to_column = client.escape_column_name("_dlt_valid_to")
+
+        for table in schema.data_tables(seen_data_only=True):
+            columns = table["columns"]
+            if LINEAGE_OBJECT_ID not in columns or "_dlt_valid_to" not in columns:
+                continue
+
+            table_name = table["name"]
+            qualified_table = client.make_qualified_table_name(table_name)
+            object_rows = client.execute_sql(
+                f"SELECT DISTINCT {object_column} FROM {qualified_table} "
+                f"WHERE {valid_to_column} IS NULL"
+            ) or []
+
+            for (object_id,) in object_rows:
+                if object_id is None:
+                    # `= NULL` matches nothing in SQL, so retiring these would log an
+                    # action that never happened. Unattributable rows are left live.
+                    logger.warning(
+                        f"Live rows in {table_name} carry no {LINEAGE_OBJECT_ID}; "
+                        f"leaving them open because they cannot be attributed."
+                    )
+                    continue
+
+                status = extraction_status.get(object_id, {})
+                confirmed_empty = (
+                    status.get("completed")
+                    and status.get("yielded") == 0
+                    and status.get("totals")
+                    and all(total == 0 for total in status["totals"])
+                )
+                removed_object = object_id not in current_tables
+                if not (confirmed_empty or removed_object):
+                    continue
+
+                client.execute_sql(
+                    f"UPDATE {qualified_table} SET {valid_to_column} = CURRENT_TIMESTAMP "
+                    f"WHERE {valid_to_column} IS NULL AND {object_column} = %s",
+                    object_id,
+                )
+                reason = "confirmed empty" if confirmed_empty else "removed from metadata"
+                message = f"Retired live rows for {object_id} in {table_name}: {reason}"
+                logger.warning(message)
+                retired.append(message)
+
+    return retired
