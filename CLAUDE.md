@@ -151,9 +151,24 @@ Known gaps, both documented in the README, neither cheaply fixable:
   lower endpoint is what we can be sure was present the whole time. `--skip-unreadable` explicitly
   does **not** swallow this. If the envelope omits the count, reconciliation is skipped rather
   than failing closed.
-- Not yet done: `sort_field=<Record ID field key>&sort_order=asc` would stop *insertions* from
-  shifting boundaries at all (verified working against the live API — note `sort_field=id` is
-  silently ignored; it must be the field key of Knack's auto-added "Record ID" field).
+- **Rejected: sorting the extraction.** `sort_field=<Record ID field key>&sort_order=asc` does
+  work (verified against the live API — `sort_field=id` is silently ignored; it must be the field
+  key of Knack's auto-added "Record ID" field, which all 90 objects across the three known apps
+  have exactly one of). It closes only *half* the window and costs too much for that:
+  - **Insertions**: closed. New records get higher ObjectIds, so with `asc` they append past the
+    read cursor and already-read pages never shift. (`desc` is also safe — new rows land on page 1
+    and records slide *forward*, producing duplicate reads the merge dedupes on `record_id` — but
+    it re-reads rows for nothing, so `asc` is the better of the two.)
+  - **Deletions**: NOT closed, in either direction. A record deleted before the cursor pulls
+    everything after it back one slot, so a row at the top of page N+1 slides to the bottom of
+    page N, which is already read. This is exactly the case the count check catches.
+  - **Cost, measured 2026-08-26** on a 7,568-record object at 1000 rows/page: full sweep 33.2s
+    unsorted vs 43.5s sorted, median of 2 trials, slower in both — **+31%**. Per-page timings were
+    pure noise; only the full sweep is meaningful. Across a 61-object app that is a third added to
+    every sync to reduce how often a check that already exists has to fire.
+
+  Do not re-propose this without a new measurement. If it is ever revisited, the argument that
+  would change the answer is Knack shipping a cursor API, not a faster sort.
 
 ## Testing
 
