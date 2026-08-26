@@ -10,7 +10,7 @@ import pytest
 from dlt.pipeline.exceptions import PipelineStepFailed
 from knack_sleuth.models import KnackAppMetadata
 
-from knack_elt.knack_dlt import build_knack_resources
+from knack_elt.knack_dlt import RecordCountShortfall, build_knack_resources
 from knack_elt.mapping import create_app_mappings, slugify_field_name
 
 
@@ -369,3 +369,95 @@ def test_field_named_like_an_escape_hatch_still_gets_its_own_column():
     field_mappings, _, _, _ = create_app_mappings(app)
     slugs = list(field_mappings["object_1"].values())
     assert len(slugs) == len(set(slugs)), f"fallback collided: {slugs}"
+
+
+class CountingClient(FakeClient):
+    """Mimics Knack's envelope: pages carry a `total_records` the paginator drops."""
+
+    def __init__(self, pages, totals):
+        super().__init__(pages)
+        self.totals = totals  # object_key -> total_records reported, or list per page
+
+    def paginate(self, url, params=None):
+        object_key = url.split("/")[2]
+        reported = self.totals.get(object_key)
+        rows = self.pages.get(object_key, [])
+        totals = reported if isinstance(reported, list) else [reported]
+        for total in totals:
+            page = _PageWithResponse(rows, total)
+            rows = []  # subsequent pages empty; the count check is what matters
+            yield page
+
+
+class _PageWithResponse(list):
+    def __init__(self, rows, total):
+        super().__init__(rows)
+        self.response = _FakeResponse(total)
+
+
+class _FakeResponse:
+    def __init__(self, total):
+        self._total = total
+
+    def json(self):
+        if self._total is None:
+            raise ValueError("no envelope")
+        return {"total_records": self._total}
+
+
+def _one_object_app():
+    return make_app([make_object("object_1", "A", [("field_1", "X", "short_text")])])
+
+
+def test_shortfall_against_total_records_aborts(tmp_path):
+    """A record that slid across a page boundary must not reach the merge, which
+    would retire it as deleted in Knack."""
+    client = CountingClient({"object_1": [{"id": "1", "field_1": "a"}]}, {"object_1": 5})
+    with pytest.raises(PipelineStepFailed) as exc:
+        load(_one_object_app(), client, tmp_path / "t.duckdb")
+    # dlt wraps the resource's exception; the cause is what we care about.
+    causes = []
+    err = exc.value
+    while err is not None:
+        causes.append(type(err))
+        err = err.__cause__ or err.__context__
+    assert RecordCountShortfall in causes, f"wrong exception chain: {causes}"
+
+
+def test_shortfall_is_not_swallowed_by_skip_unreadable(tmp_path):
+    """--skip-unreadable covers objects that fail before yielding; a short batch is a
+    different animal and must still abort."""
+    client = CountingClient({"object_1": []}, {"object_1": 5})
+    with pytest.raises(PipelineStepFailed):
+        load(_one_object_app(), client, tmp_path / "t.duckdb", skip_unreadable=True)
+
+
+def test_matching_count_loads_normally(tmp_path):
+    client = CountingClient({"object_1": [{"id": "1", "field_1": "a"}]}, {"object_1": 1})
+    con = load(_one_object_app(), client, tmp_path / "t.duckdb")
+    assert con.execute("select count(*) from fresh_app.A").fetchone()[0] == 1
+    con.close()
+
+
+def test_records_added_mid_run_do_not_trip_the_check(tmp_path):
+    """The count rising between the first and last page is a concurrent insert, not a
+    miss - the floor is what was there throughout."""
+    client = CountingClient({"object_1": [{"id": "1", "field_1": "a"}]}, {"object_1": [1, 9]})
+    con = load(_one_object_app(), client, tmp_path / "t.duckdb")
+    assert con.execute("select count(*) from fresh_app.A").fetchone()[0] == 1
+    con.close()
+
+
+def test_missing_total_records_skips_the_check(tmp_path):
+    """Reconciliation is best-effort: an envelope without the count must not break."""
+    client = CountingClient({"object_1": [{"id": "1", "field_1": "a"}]}, {"object_1": None})
+    con = load(_one_object_app(), client, tmp_path / "t.duckdb")
+    assert con.execute("select count(*) from fresh_app.A").fetchone()[0] == 1
+    con.close()
+
+
+def test_genuinely_empty_object_is_consistent(tmp_path):
+    """Zero fetched and zero reported agree, so this is not a shortfall. (The rows
+    already loaded still read as live - that gap is documented, not fixed here.)"""
+    load(_one_object_app(), CountingClient({"object_1": []}, {"object_1": 0}),
+         tmp_path / "t.duckdb")

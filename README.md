@@ -213,6 +213,12 @@ row. The [architecture doc](docs/ARCHITECTURE.md#4-scd2-row-lifecycle) works thr
 > is running* shifts the page boundaries under it. A record that slides across a boundary is
 > missed from that batch, and the merge retires it as though it were deleted.
 >
+> Since 0.5.0 the pipeline checks for this: every Knack page response carries a
+> `total_records`, and a run that fetches fewer records than Knack reported it held
+> throughout **aborts that run rather than loading a short batch** — so the merge never
+> gets the chance to retire the missing rows. What follows describes what happened
+> before that check, and what still happens if Knack's envelope omits the count.
+>
 > This mostly self-corrects: the next run sees the record again and re-adds it, so
 > `latest_version and is_live_in_knack` is right again within a day. What does *not* correct is
 > the history — the spurious retirement and re-add stay in the table permanently, so a
