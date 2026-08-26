@@ -72,9 +72,9 @@ four — MotherDuck, dbt and Preset, orchestrated by a daily GitHub Actions job 
 - **Gives you readable column names.** `field_43` becomes `event_name`, slugified from the field
   label you already chose in the builder. Knack's own row id is loaded as `record_id`, so a
   field you named `id` keeps the `id` column it was named for.
-- **Cleans what the API hands back.** Empty strings become `NULL` in numeric fields, boolean
-  fields get the default declared in Knack, and malformed JSON becomes `NULL` instead of
-  failing the load.
+- **Cleans what the API hands back.** Empty strings become `NULL` in numeric fields, and
+  boolean fields get the default declared in Knack, so a column of numbers types as numbers
+  rather than as text full of `''`.
 - **Keeps history.** Loads with dlt's SCD2 merge strategy keyed on the Knack record id, so an
   edit retires the old row and appends a new one. Tables are kept flat
   (`max_table_nesting=0`) — one table per Knack object, no nested child tables.

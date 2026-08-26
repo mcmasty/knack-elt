@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -11,8 +12,13 @@ from knack_elt import __version__
 from knack_elt.config import settings
 from knack_elt.knack_dlt import build_knack_resources, create_rest_client
 
-cli = typer.Typer()
+# pretty_exceptions_show_locals is already off by default in Typer >= 0.17, but the
+# pin is a floor: an unhandled exception must never print the API key or the
+# token-bearing MotherDuck connection string, so state it rather than inherit it.
+cli = typer.Typer(pretty_exceptions_show_locals=False)
 console = Console()
+
+logging.basicConfig(level=logging.INFO)
 
 def default_db_dir() -> Path:
     """Where local DuckDB files go when --db-path is not given.
@@ -101,15 +107,21 @@ def run_pipeline(
         console.print(f"[bold red]Error:[/bold red] unknown destination {destination!r}; expected 'local' or 'motherduck'.")
         raise typer.Exit(code=1)
 
+    if destination == "motherduck" and db_path is not None:
+        console.print("[bold red]Error:[/bold red] --db-path only applies to --destination local.")
+        raise typer.Exit(code=1)
+
     if destination == "motherduck" and not settings.motherduck_api_key:
         console.print("[bold red]Error:[/bold red] --destination motherduck requires motherduck_api_key in the environment or .env.")
         raise typer.Exit(code=1)
 
     kn_app = load_app_metadata(app_id=final_app_id, refresh=refresh_metadata).application
 
-    dest_db_name = f"knack_{kn_app.slug}_data"
-    dlt_pipeline_name = f"knack_{kn_app.slug}_pipeline"
-    dataset_name = kn_app.slug.replace('-', '_')
+    # Slugs commonly contain dashes; identifiers downstream should not.
+    slug = kn_app.slug.replace('-', '_')
+    dest_db_name = f"knack_{slug}_data"
+    dlt_pipeline_name = f"knack_{slug}_pipeline"
+    dataset_name = slug
 
     if destination == "local":
         local_db_path = (db_path or default_db_dir() / f"{dest_db_name}.duckdb").resolve()

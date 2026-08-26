@@ -5,6 +5,9 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -45,6 +48,10 @@ jobs:
 
   publish:
     needs: build
+    # Belt and braces. The pypi environment only deploys on v* tags and the PyPI
+    # trusted publisher is constrained to that environment, but both live outside
+    # this file - so state the constraint here too, where it is readable.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Trusted Publishing: PyPI verifies this workflow's OIDC identity, so there
     # is no API token to store or rotate. Requires a pending publisher on PyPI
@@ -58,7 +65,9 @@ jobs:
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # SHA-pinned: this job holds the OIDC identity that can publish to PyPI,
+      # and release/v1 is a mutable branch. Dependabot bumps the pin.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   github-release:
     needs: build

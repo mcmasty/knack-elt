@@ -192,10 +192,8 @@ flowchart TB
             stamp["rename id → record_id<br/>stamp _kn_table_name + _kn_object_id"]
             pk{"row has an id?"}
             skip["log warning, drop row"]
-            cjf["clean_json_fields()<br/>invalid or empty JSON → None"]
             pg --> stamp --> pk
             pk -->|no| skip
-            pk -->|yes| cjf
         end
 
         subgraph transformer["dlt.transformer — get_remap_transformer()"]
@@ -207,7 +205,7 @@ flowchart TB
         end
 
         loop --> pg
-        cjf -->|"chained with the pipe operator"| ces
+        pk -->|"yes — chained with the pipe operator"| ces
     end
 
     nf -.-> ces

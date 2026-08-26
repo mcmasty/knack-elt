@@ -70,7 +70,7 @@ def column_name_for_field(field_name, field_key, singular, used_slugs,
 
 
 def create_app_mappings(app_metadata: Application) -> tuple[
-    dict[Any, dict[Any, Any]], dict[Any, Any], list[str | Any], dict[Any, Any]]:
+    dict[Any, dict[Any, Any]], dict[Any, Any], set[str], dict[Any, Any]]:
     """
     Creates both field mappings and object mappings from the Knack app metadata.
     
@@ -80,8 +80,8 @@ def create_app_mappings(app_metadata: Application) -> tuple[
     - field_mappings: A dictionary of dictionaries. The outer dictionary keys are object_ids,
       and the inner dictionary maps original field keys to new slugified field names.
     - object_mappings: A dictionary mapping table names to object_ids.
-    - numeric_fields: List of field identifiers that should be treated as numeric.
-    - default_values: Dictionary of default values for fields (primarily boolean fields).
+    - numeric_fields: Set of Knack field keys whose values are numeric-ish.
+    - default_values: Knack field key -> declared default (primarily boolean fields).
     """
     
     # Columns the pipeline owns. A user-defined field slugifying onto one of these would
@@ -104,8 +104,11 @@ def create_app_mappings(app_metadata: Application) -> tuple[
     restricted_field_names = ['record_id']
     field_mappings = {}
     object_mappings = {}
+    # Keyed by Knack field key only. Both are consumed before the remap, so entries
+    # under the slug or the raw field name could never match a row and were dead
+    # weight - three per field, scanned per row.
     default_values = {}
-    numeric_fields = []
+    numeric_fields = set()
     
     for obj in app_metadata.objects:
         object_id = obj.key
@@ -133,19 +136,14 @@ def create_app_mappings(app_metadata: Application) -> tuple[
             
             # Track numeric fields
             if field.type in NUMERIC_FIELD_TYPES:
-                numeric_fields.append(new_key)
-                numeric_fields.append(field_key)
-                numeric_fields.append(field_name)
+                numeric_fields.add(field_key)
 
             # Handle boolean fields with defaults
             if field.type == 'boolean' and field.format and hasattr(field.format, '__dict__'):
                 # Access format as Pydantic model with extra fields allowed
                 format_dict = field.format.model_dump()
                 if 'default' in format_dict:
-                    field_default_value = format_dict['default']
-                    default_values[field_key] = field_default_value
-                    default_values[new_key] = field_default_value
-                    default_values[field_name] = field_default_value
+                    default_values[field_key] = format_dict['default']
 
     return field_mappings, object_mappings, numeric_fields, default_values
     
