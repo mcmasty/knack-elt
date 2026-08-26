@@ -157,6 +157,17 @@ def build_view_specs(sql_client, objects, fields_by_object):
         omitted = tuple(
             field_key for field_key, _ in catalog_fields if field_key not in present
         )
+        # The same assert the view names get, at column granularity. A duplicate
+        # column alias is worse than a duplicate view name: DuckDB does not error,
+        # it silently renames the later one, so two labels become one column with
+        # nothing anywhere reporting it. Passthroughs are included even though the
+        # alias rules already reserve them - the assert exists precisely because
+        # those rules are not trusted to be exhaustive.
+        assert_globally_unique(
+            [(alias, field_key) for field_key, alias in columns]
+            + [(name, "a reserved passthrough column") for name in PASSTHROUGH_COLUMNS]
+        )
+
         base = view_names[object_key]
         specs.append(ViewSpec(
             object_key=object_key,

@@ -227,3 +227,40 @@ def test_lineage_and_dlt_bookkeeping_columns_stay_out_of_views(tmp_path):
     assert "_kn_object_id" not in columns
     assert columns == ["record_id", "Name", "valid_from", "valid_to", "is_live_in_knack"]
     con.close()
+
+
+def test_a_residual_column_collision_fails_before_any_sql_runs(tmp_path):
+    """The column-granularity twin of the view-name assert.
+
+    Two fields labelled `X` are suffixed to `X__field_1` / `X__field_2`, which is a
+    name a third field can already hold verbatim. DuckDB does not error on a
+    duplicate alias - it silently renames the later one to `X__field_1_1` - so
+    nothing downstream would report that two labels became one column.
+    """
+    con, client = _warehouse(
+        tmp_path,
+        [("object_1", "Classes")],
+        [("object_1", "field_1", "X"), ("object_1", "field_2", "X"),
+         ("object_1", "field_3", "X__field_1")],
+        {"object_1": ["field_1", "field_2", "field_3"]},
+    )
+    objects, fields = read_catalogs(client)
+    with pytest.raises(LabelNameCollision) as exc:
+        build_view_specs(client, objects, fields)
+    assert "field_1" in str(exc.value) and "field_3" in str(exc.value)
+    con.close()
+
+
+def test_a_field_suffixed_off_a_passthrough_cannot_land_on_another_field(tmp_path):
+    """A field labelled `record_id` becomes `record_id__field_1`, which is a name a
+    second field can hold verbatim. Both are legal Knack labels."""
+    con, client = _warehouse(
+        tmp_path,
+        [("object_1", "Classes")],
+        [("object_1", "field_1", "record_id"), ("object_1", "field_2", "record_id__field_1")],
+        {"object_1": ["field_1", "field_2"]},
+    )
+    objects, fields = read_catalogs(client)
+    with pytest.raises(LabelNameCollision):
+        build_view_specs(client, objects, fields)
+    con.close()
