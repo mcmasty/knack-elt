@@ -59,24 +59,24 @@ from knack_elt.labels import (
 
 
 def test_fold_is_ascii_only():
-    """DuckDB folds ASCII case only: ÉTÉ and été are distinct views, Classes and
-    classes are not. Folding non-ASCII too is the safe direction - it over-collides,
+    """DuckDB folds ASCII case only: ÉTÉ and été are distinct views, Customers and
+    customers are not. Folding non-ASCII too is the safe direction - it over-collides,
     costing a suffix, where under-collision costs a whole view."""
-    assert fold("Classes") == fold("CLASSES") == fold("classes")
+    assert fold("Customers") == fold("CUSTOMERS") == fold("customers")
     assert fold("Trail ") != fold("Trail")
 
 
 def test_distinct_labels_are_left_verbatim():
-    assert object_view_names([("object_1", "Classes"), ("object_2", "Invoices")]) == {
-        "object_1": "Classes",
+    assert object_view_names([("object_1", "Customers"), ("object_2", "Invoices")]) == {
+        "object_1": "Customers",
         "object_2": "Invoices",
     }
 
 
 def test_both_sides_of_a_collision_are_suffixed():
-    """If the first Classes kept the plain name, adding a second object with that
+    """If the first Customers kept the plain name, adding a second object with that
     label would silently move an existing view."""
-    assert object_view_names([("object_3", "Classes"), ("object_7", "Classes")]) == {
+    assert object_view_names([("object_3", "Customers"), ("object_7", "Customers")]) == {
         "object_3": "Classes__object_3",
         "object_7": "Classes__object_7",
     }
@@ -84,15 +84,15 @@ def test_both_sides_of_a_collision_are_suffixed():
 
 def test_case_variant_labels_collide():
     """The bug this rule exists for: CREATE OR REPLACE would silently destroy one."""
-    assert object_view_names([("object_3", "Classes"), ("object_7", "classes")]) == {
+    assert object_view_names([("object_3", "Customers"), ("object_7", "customers")]) == {
         "object_3": "Classes__object_3",
-        "object_7": "classes__object_7",
+        "object_7": "customers__object_7",
     }
 
 
 def test_a_label_colliding_with_another_objects_history_view_is_suffixed():
-    names = object_view_names([("object_1", "Classes"), ("object_2", "classes_HISTORY")])
-    assert names["object_1"] != "Classes" or names["object_2"] != "classes_HISTORY"
+    names = object_view_names([("object_1", "Customers"), ("object_2", "customers_HISTORY")])
+    assert names["object_1"] != "Customers" or names["object_2"] != "customers_HISTORY"
     all_names = [n for k, v in names.items() for n in (v, v + HISTORY_SUFFIX)]
     assert len(all_names) == len({fold(n) for n in all_names})
 
@@ -131,12 +131,12 @@ def test_a_residual_collision_is_raised_not_papered_over():
     """The rules are not trusted to be exhaustive. Anything that survives them must
     fail loudly before a single statement runs."""
     with pytest.raises(LabelNameCollision) as exc:
-        assert_globally_unique([("Classes", "object_1"), ("classes", "object_2")])
+        assert_globally_unique([("Customers", "object_1"), ("customers", "object_2")])
     assert "object_1" in str(exc.value) and "object_2" in str(exc.value)
 
 
 def test_globally_unique_names_pass():
-    assert_globally_unique([("Classes", "object_1"), ("Invoices", "object_2")]) is None
+    assert_globally_unique([("Customers", "object_1"), ("Invoices", "object_2")]) is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -169,8 +169,8 @@ class LabelNameCollision(Exception):
 def fold(name: str) -> str:
     """The comparison form of an identifier.
 
-    DuckDB folds identifiers ASCII-case-insensitively even when quoted, so "Classes"
-    and "classes" are one catalog object and CREATE OR REPLACE silently replaces
+    DuckDB folds identifiers ASCII-case-insensitively even when quoted, so "Customers"
+    and "customers" are one catalog object and CREATE OR REPLACE silently replaces
     rather than erroring. Python's lower() also folds non-ASCII, which DuckDB does
     not - that over-collides, costing an unnecessary suffix, and never loses a view.
     """
@@ -341,12 +341,12 @@ def test_missing_catalogs_is_an_error_not_an_empty_plan(tmp_path):
 def test_catalog_rows_come_back_as_label_pairs(tmp_path):
     con, client = _warehouse(
         tmp_path,
-        [("object_1", "Classes")],
+        [("object_1", "Customers")],
         [("object_1", "field_1", "Name")],
         {"object_1": ["field_1"]},
     )
     objects, fields = read_catalogs(client)
-    assert objects == [("object_1", "Classes")]
+    assert objects == [("object_1", "Customers")]
     assert fields == {"object_1": [("field_1", "Name")]}
     con.close()
 
@@ -356,7 +356,7 @@ def test_a_field_with_no_physical_column_is_omitted_not_emitted(tmp_path):
     that has never held one would fail the whole view."""
     con, client = _warehouse(
         tmp_path,
-        [("object_1", "Classes")],
+        [("object_1", "Customers")],
         [("object_1", "field_1", "Name"), ("object_1", "field_7", "Never Used")],
         {"object_1": ["field_1"]},
     )
@@ -371,7 +371,7 @@ def test_a_field_with_no_physical_column_is_omitted_not_emitted(tmp_path):
 def test_an_object_with_no_physical_table_is_skipped(tmp_path):
     con, client = _warehouse(
         tmp_path,
-        [("object_1", "Classes"), ("object_2", "Never Loaded")],
+        [("object_1", "Customers"), ("object_2", "Never Loaded")],
         [("object_1", "field_1", "Name")],
         {"object_1": ["field_1"]},
     )
@@ -384,7 +384,7 @@ def test_an_object_with_no_physical_table_is_skipped(tmp_path):
 
 def test_generated_views_run_and_split_live_from_history(tmp_path):
     con, client = _warehouse(
-        tmp_path, [("object_1", "Classes")],
+        tmp_path, [("object_1", "Customers")],
         [("object_1", "field_1", 'Course "Name"')], {"object_1": ["field_1"]},
     )
     con.execute("insert into ds.object_1 values ('1','Physics','2026-01-01',NULL)")
@@ -395,11 +395,11 @@ def test_generated_views_run_and_split_live_from_history(tmp_path):
     con.execute(view_sql(specs[0], "ds", "ds_labels", history=False))
     con.execute(view_sql(specs[0], "ds", "ds_labels", history=True))
 
-    assert con.execute('select record_id from ds_labels."Classes"').fetchall() == [("1",)]
+    assert con.execute('select record_id from ds_labels."Customers"').fetchall() == [("1",)]
     assert con.execute(
         'select record_id, is_live_in_knack from ds_labels."Classes_history" order by record_id'
     ).fetchall() == [("1", True), ("2", False)]
-    assert [d[0] for d in con.execute('select * from ds_labels."Classes"').description] == [
+    assert [d[0] for d in con.execute('select * from ds_labels."Customers"').description] == [
         "record_id", 'Course "Name"'
     ]
     con.close()
@@ -407,7 +407,7 @@ def test_generated_views_run_and_split_live_from_history(tmp_path):
 
 def test_lineage_and_dlt_bookkeeping_columns_stay_out_of_views(tmp_path):
     con, client = _warehouse(
-        tmp_path, [("object_1", "Classes")],
+        tmp_path, [("object_1", "Customers")],
         [("object_1", "field_1", "Name")], {"object_1": ["field_1"]},
     )
     con.execute('alter table ds.object_1 add column "_kn_object_id" varchar')
@@ -623,7 +623,7 @@ def _synced(tmp_path, objects, fields, rows, name="lv"):
 
 def test_apply_creates_both_views_and_a_second_apply_is_a_no_op(tmp_path):
     pipeline, db = _synced(
-        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        tmp_path, [("object_1", "Customers")], [("object_1", "field_1", "Name")],
         {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
     )
     plan = plan_label_views(pipeline)
@@ -631,7 +631,7 @@ def test_apply_creates_both_views_and_a_second_apply_is_a_no_op(tmp_path):
     con = duckdb.connect(str(db))
     first = sorted(r[0] for r in con.execute(
         "select view_name from duckdb_views() where schema_name='ds_labels'").fetchall())
-    assert first == ["Classes", "Classes_history"]
+    assert first == ["Customers", "Classes_history"]
     con.close()
 
     again = plan_label_views(pipeline)
@@ -645,27 +645,27 @@ def test_apply_creates_both_views_and_a_second_apply_is_a_no_op(tmp_path):
 
 def test_a_rename_is_attributed_and_the_stale_view_goes(tmp_path):
     pipeline, db = _synced(
-        tmp_path, [("object_1", "Courses")], [("object_1", "field_1", "Name")],
+        tmp_path, [("object_1", "Clients")], [("object_1", "field_1", "Name")],
         {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
-    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+    pipeline.run([{"object_id": "object_1", "object_name": "Customers"}],
                  table_name="_kn_object_catalog", write_disposition="replace")
 
     plan = plan_label_views(pipeline)
-    assert ("Courses", "Classes", "object_1") in plan.renamed
+    assert ("Clients", "Customers", "object_1") in plan.renamed
     apply_label_views(pipeline, plan)
     con = duckdb.connect(str(db))
     assert sorted(r[0] for r in con.execute(
         "select view_name from duckdb_views() where schema_name='ds_labels'").fetchall()) == [
-        "Classes", "Classes_history"]
+        "Customers", "Classes_history"]
     con.close()
 
 
 def test_the_rebuild_never_touches_the_physical_table(tmp_path):
     """The whole point: a label rename must leave SCD2 history byte-identical."""
     pipeline, db = _synced(
-        tmp_path, [("object_1", "Courses")], [("object_1", "field_1", "Name")],
+        tmp_path, [("object_1", "Clients")], [("object_1", "field_1", "Name")],
         {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
     )
     con = duckdb.connect(str(db))
@@ -673,7 +673,7 @@ def test_the_rebuild_never_touches_the_physical_table(tmp_path):
     con.close()
 
     apply_label_views(pipeline, plan_label_views(pipeline))
-    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+    pipeline.run([{"object_id": "object_1", "object_name": "Customers"}],
                  table_name="_kn_object_catalog", write_disposition="replace")
     apply_label_views(pipeline, plan_label_views(pipeline))
 
@@ -705,7 +705,7 @@ def test_two_objects_swapping_names_applies_correctly(tmp_path):
 
 def test_a_hand_authored_table_blocks_the_rebuild_and_names_itself(tmp_path):
     pipeline, db = _synced(
-        tmp_path, [("object_1", "Classes")], [("object_1", "field_1", "Name")],
+        tmp_path, [("object_1", "Customers")], [("object_1", "field_1", "Name")],
         {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))

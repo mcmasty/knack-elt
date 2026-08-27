@@ -7,9 +7,9 @@
 
 Physical warehouse identities are immutable by design: tables are `object_N`, columns are
 `field_N`, both derived from Knack keys that never change. That is what keeps a record's SCD2
-history intact when someone renames a table in the Knack builder from Courses to Classes.
+history intact when someone renames a table in the Knack builder from Clients to Customers.
 
-The cost is that nobody can read the warehouse. An analyst looking for Classes finds
+The cost is that nobody can read the warehouse. An analyst looking for Customers finds
 `object_3`, and its columns are `field_1 … field_47`. The current labels are already loaded
 into `_kn_object_catalog` and `_kn_field_catalog` on every sync, but joining against a catalog
 to name a column is not a workflow anyone will adopt.
@@ -54,7 +54,7 @@ confirms the plan. `run-pipeline` reports drift and does nothing about it — th
   _dlt_loads, …
 
 {stable_app_id}_labels       views only, managed by knack-elt, disposable
-  "Classes"                  live rows, columns aliased to current labels
+  "Customers"                  live rows, columns aliased to current labels
   "Classes_history"          every version, plus validity columns
 ```
 
@@ -95,7 +95,7 @@ disagreeing about what counts as out of date.
 Two views per object. Both are generated; there is no flag to suppress either.
 
 ```sql
-CREATE OR REPLACE VIEW {labels}."Classes" AS
+CREATE OR REPLACE VIEW {labels}."Customers" AS
 SELECT record_id,
        field_1 AS "Name",
        field_2 AS "Start Date"
@@ -116,7 +116,7 @@ Both views are stamped with `COMMENT ON VIEW … IS '<object_key>'`, which is ho
 attributes an existing view to its object.
 
 The split exists because "current" has two meanings under SCD2 and conflating them is
-CLAUDE.md's first trap. `Classes` answers "what is in Knack now" and is what a BI tool should
+CLAUDE.md's first trap. `Customers` answers "what is in Knack now" and is what a BI tool should
 point at. `Classes_history` keeps the records deleted upstream — exactly the rows the warehouse
 exists to preserve — visible under a name that says what they are, instead of silently absent.
 
@@ -131,14 +131,14 @@ as-is; this is verified working in DuckDB.
 
 | Case | Rule |
 | --- | --- |
-| Two objects labelled `Classes` | **Both** become `Classes__object_3` / `Classes__object_7`. Never one keeps the plain name. |
-| Two objects labelled `Classes` and `classes` | Same rule. Identifiers are compared **folded**, not as exact strings — see below |
+| Two objects labelled `Customers` | **Both** become `Classes__object_3` / `Classes__object_7`. Never one keeps the plain name. |
+| Two objects labelled `Customers` and `customers` | Same rule. Identifiers are compared **folded**, not as exact strings — see below |
 | A label equals another object's `…_history` name | Base names are reserved in both forms before collisions are computed |
 | Empty or whitespace-only label | Falls back to the object key for an object, the field key for a field |
 | Two fields in one object share a label | Both suffixed with `__field_N` |
 | Field labelled `record_id`, `valid_from`, `valid_to`, `is_live_in_knack` (in any casing) | Suffixed with `__field_N`; passthrough columns always win |
 
-The "both get suffixed" rule is the one that matters. If the first `Classes` kept the plain
+The "both get suffixed" rule is the one that matters. If the first `Customers` kept the plain
 name, then adding a second object with the same label would silently move an existing view and
 break queries that had nothing to do with the edit. Suffixing both makes a name depend only on
 the object it belongs to, never on what else happens to exist.
@@ -150,8 +150,8 @@ only appear in the history view, so a given field has the same column name in bo
 
 This is the rule everything above depends on, and getting it wrong is silent rather than loud.
 
-DuckDB folds identifiers ASCII-case-insensitively **even when quoted**. `"Classes"` and
-`"classes"` are the same catalog object, and `CREATE OR REPLACE` therefore *replaces* rather
+DuckDB folds identifiers ASCII-case-insensitively **even when quoted**. `"Customers"` and
+`"customers"` are the same catalog object, and `CREATE OR REPLACE` therefore *replaces* rather
 than errors. Verified locally: creating both leaves exactly one view, with no warning. Column
 aliases are worse — DuckDB does not error on a duplicate alias, it silently renames the later
 one, so a field labelled `Record_ID` beside the `record_id` passthrough yields a column called
@@ -169,7 +169,7 @@ suffix, where an under-collision costs a view.
 
 The rules above are not trusted to be exhaustive. Legal Knack apps can reach past them — an
 object labelled literally `Classes__object_7` while two other objects are both labelled
-`Classes`, or an object labelled `object_3` beside an object whose empty label falls back to
+`Customers`, or an object labelled `object_3` beside an object whose empty label falls back to
 `object_3`.
 
 So the generator computes **every** candidate name — verbatim, fallback, suffixed, `…_history`
@@ -204,7 +204,7 @@ The plan is a diff, computed for a human to read. The apply is not incremental:
 statement correct in isolation, which matters when one is pasted into a console to debug.
 
 This avoids an ordering hazard that incremental application has and is genuinely hard to get
-right: if object_3 is renamed to `Classes` while object_9's view is *currently* named `Classes`,
+right: if object_3 is renamed to `Customers` while object_9's view is *currently* named `Customers`,
 any create-then-drop order transiently clobbers one of them. A full rebuild has no intermediate
 states to reason about, is trivially idempotent, and costs nothing — views are metadata.
 
@@ -234,7 +234,7 @@ Prints the plan, then asks:
 
 ```
 Plan for app_xxx_a1b2c3d4_labels:
-  ~ "Courses"      -> "Classes"      (object_3)
+  ~ "Clients"      -> "Customers"      (object_3)
   ~ "Invoice Line" -> "Line Item"    (object_7)
   + "Cohorts"                        (object_9)
   - "Old Thing"    (object no longer in the catalog)
@@ -294,7 +294,7 @@ Reported as:
 
 ```
 Label drift: 2 objects renamed since views were built
-  object_3   Courses  ->  Classes
+  object_3   Clients  ->  Customers
   object_7   Invoice Line  ->  Line Item
 Run `knack-elt refresh-views` to update the view layer.
 ```
@@ -337,10 +337,10 @@ DuckDB files — the existing pattern. Every case is a shape a fresh Knack app c
 - Applying twice with no Knack change is a no-op producing an identical view set
 - A view rename that swaps two names between objects applies correctly (the ordering hazard)
 - `run-pipeline` on a warehouse with no `_labels` schema reports no drift and creates nothing
-- Objects labelled `Classes` and `classes` both get suffixed; both views exist afterward
+- Objects labelled `Customers` and `customers` both get suffixed; both views exist afterward
 - Two fields labelled `Name` and `name` get distinct, non-mangled column names
 - A field labelled `Record_ID` does not displace or shadow the `record_id` passthrough
-- An object labelled `classes_HISTORY` does not collide with `Classes`'s history view
+- An object labelled `customers_HISTORY` does not collide with `Customers`'s history view
 - A label that survives every rule but still collides fails the plan loudly, before any SQL runs
 - A renamed **field** surfaces as drift in `run-pipeline` (the name-only blind spot)
 - A catalog-only object with no physical table reports no drift after a refresh — no phantom
