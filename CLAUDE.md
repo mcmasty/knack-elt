@@ -106,7 +106,7 @@ immutable `object_N` / `field_N` tables, never touching them. No Knack dependenc
 reads the warehouse.
 - `object_view_names()`, `column_aliases()`, `assert_globally_unique()`: pure name generation,
   no database. **Comparison is folded, emission is verbatim** — DuckDB folds identifiers
-  ASCII-case-insensitively *even when quoted*, so `"Classes"` and `"classes"` are one catalog
+  ASCII-case-insensitively *even when quoted*, so `"Customers"` and `"customers"` are one catalog
   object and `CREATE OR REPLACE` silently destroys whichever was created second. Every name
   comparison here goes through `fold()`; every identifier actually emitted into SQL is the
   original text, verbatim, with embedded `"` doubled. Get this backwards and a collision either
@@ -127,7 +127,7 @@ reads the warehouse.
   set. Not incremental on purpose: if one object's new name is the name another object's view
   currently holds, any create-then-drop order transiently clobbers one of them mid-rebuild. The
   first failure rolls everything back; there is no partial state and no per-view failure list.
-- Two views per object — `"Classes"` (live rows) and `"Classes_history"` (every version, plus
+- Two views per object — `"Customers"` (live rows) and `"Classes_history"` (every version, plus
   `valid_from` / `valid_to` / `is_live_in_knack`) — because "current" has two meanings under
   SCD2, and conflating them is this file's first SCD2 trap below.
 - `{stable_app_id}_labels` is knack-elt-managed: every apply removes hand-authored **views**

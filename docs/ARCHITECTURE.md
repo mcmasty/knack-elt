@@ -144,13 +144,13 @@ flowchart TB
 | Schema | Owner | Contents | Rule |
 |---|---|---|---|
 | raw (the stable app-id dataset) | dlt | One `object_N` table per Knack object, `field_N` columns, full SCD2 history | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
-| `{stable_app_id}_labels` | knack-elt (`labels.py`) | Two views per object — `"Classes"` (live rows) and `"Classes_history"` (every version, plus `valid_from` / `valid_to` / `is_live_in_knack`) | Views only, disposable, rebuilt wholesale by `knack-elt refresh-views` — never automatically, never touching `object_N` / `field_N`. |
+| `{stable_app_id}_labels` | knack-elt (`labels.py`) | Two views per object — `"Customers"` (live rows) and `"Classes_history"` (every version, plus `valid_from` / `valid_to` / `is_live_in_knack`) | Views only, disposable, rebuilt wholesale by `knack-elt refresh-views` — never automatically, never touching `object_N` / `field_N`. |
 | `reporting` | dbt | Staging + mart views | Everything downstream reads here. No dashboard queries raw directly. |
 
 **Label views are this repo's, not the companion repo's.** `{stable_app_id}_labels` is generated
 from `_kn_object_catalog` / `_kn_field_catalog` — the labels loaded on every sync — so an
-analyst can browse `"Classes"` instead of `object_3`. It is disposable and read-only: identifier
-comparisons are ASCII-case folded so `"Classes"` and `"classes"` can't collide, but every name
+analyst can browse `"Customers"` instead of `object_3`. It is disposable and read-only: identifier
+comparisons are ASCII-case folded so `"Customers"` and `"customers"` can't collide, but every name
 emitted into SQL is verbatim, and an apply is a full drop-and-rebuild in one transaction rather
 than an incremental diff, because an incremental create-then-drop can transiently clobber a view
 if two objects swap the names their views hold. Nothing rebuilds this layer on its own — a label
