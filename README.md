@@ -213,11 +213,29 @@ drops and rebuilds the whole thing in one transaction, so a hand-authored **view
 is removed on the next run. A hand-authored **table** is left alone but blocks the apply — DuckDB
 won't let a view replace a table — and the error names it so it can be dropped by hand.
 
+### Naming the warehouse yourself
+
+By default every physical name derives from the immutable app id. `--name` (or
+`KNACK_WAREHOUSE_NAME` in the environment or `.env`) overrides that in one place: the database
+becomes `knack_{name}_data`, the dataset `{name}`, and the label views schema `{name}_labels`.
+This exists for deliberate adoption — a deployment that already has a warehouse called
+`knack_acme_ops_data.acme_ops` and wants knack-elt to keep writing there.
+
+The name is validated, never transformed: lowercase letter first, then lowercase letters,
+digits and underscores. Anything else is an error, because a name that silently becomes
+something else is how one app ends up with two warehouses.
+
+**Once chosen, use it every run** — put it in `.env` rather than typing it. A run with the
+name and a run without it write to two different warehouses, silently splitting a record's
+SCD2 history. On local runs the CLI prints a note when it sees a warehouse under this app's
+other naming sitting beside the one it is using.
+
 ### Other flags
 
 | Flag | What it does |
 | --- | --- |
 | `--api-key` | Knack REST API key, if you would rather not set `KNACK_API_KEY` |
+| `--name` | Pin the warehouse/dataset names instead of deriving them from the app id (see above) |
 | `--refresh-metadata` | Re-fetch app metadata instead of reusing knack-sleuth's 24h on-disk cache |
 | `--skip-unreadable` | Log and continue past an object only when its first request returns HTTP 403. Authentication failures, rate limits, timeouts, server errors and failures after any row was yielded still abort the run. |
 
