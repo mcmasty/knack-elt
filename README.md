@@ -169,6 +169,50 @@ knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
 > note when a slug-named warehouse from an earlier release is still sitting beside the
 > new one.
 
+### Label views
+
+Physical tables and columns are keyed on immutable Knack ids — `object_N` tables, `field_N`
+columns — which is what keeps a rename in the Knack builder from splitting a record's SCD2
+history. The cost is that the warehouse alone is not friendly to browse: finding out that
+`object_3` is "Classes" means joining against `_kn_object_catalog`.
+
+`knack-elt refresh-views` builds a disposable layer of views for that, in a schema separate from
+the data — `{stable_app_id}_labels` beside `{stable_app_id}` — named after the labels currently
+in `_kn_object_catalog` and `_kn_field_catalog`. Two views per object:
+
+- `"Classes"` — live rows only, columns aliased to current field labels. Point a BI tool here.
+- `"Classes_history"` — every version of every row, including ones deleted in Knack, plus
+  `valid_from` / `valid_to` / `is_live_in_knack`. The split exists because "current" has two
+  meanings under SCD2 — a view that only showed live rows would silently drop exactly the
+  records the warehouse exists to keep, so the history form keeps them visible under a name that
+  says what they are.
+
+The layer is views only: it never renames or restructures anything under `object_N` / `field_N`,
+it just reads from it.
+
+```bash
+knack-elt refresh-views --app-id acme_ops_app_id
+```
+
+The command reads the label catalogs already in the warehouse — no Knack API key, no network —
+so the views reflect labels as of the *last sync*, not this instant. If those catalogs don't
+exist yet — a warehouse `run-pipeline` has never touched, or a mistyped `--db-path` — it is a
+hard error naming the resolved database path, rather than reading as "zero objects" and quietly
+dropping the whole view layer. Otherwise it prints a plan (renames, column changes, creations,
+drops) and asks before applying it. One case asks even under `--yes`: a plan that would drop
+every view and create none, which is what a genuinely emptied app looks like, so it always gets
+a human even in scripted use.
+
+A label edit in the Knack builder must never move a warehouse name on its own: `refresh-views` is
+the only command that changes the view layer, and it always asks first. `run-pipeline` only
+*reports* drift at the end of a sync — which objects and fields have been renamed since the views
+were last built — it never applies it.
+
+The `{stable_app_id}_labels` schema is entirely knack-elt-managed: every `refresh-views` apply
+drops and rebuilds the whole thing in one transaction, so a hand-authored **view** placed there
+is removed on the next run. A hand-authored **table** is left alone but blocks the apply — DuckDB
+won't let a view replace a table — and the error names it so it can be dropped by hand.
+
 ### Other flags
 
 | Flag | What it does |
