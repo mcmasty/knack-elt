@@ -38,7 +38,10 @@ overrides it, and the resolved path is printed each run. **Do not make this CWD-
 again**: the same app must keep one warehouse wherever the command runs, or a record's SCD2
 history silently splits across directories. Two tests pin it.
 
-Other flags: `--api-key`, `--refresh-metadata` (bypass knack-sleuth's 24h metadata cache),
+Other flags: `--api-key`, `--name` (warehouse-name override, also
+`KNACK_WAREHOUSE_NAME`; validated to `[a-z][a-z0-9_]*` and never transformed — on both
+`run-pipeline` and `refresh-views`, and once adopted it must be used every run or SCD2
+history splits across warehouses), `--refresh-metadata` (bypass knack-sleuth's 24h metadata cache),
 `--skip-unreadable` (see the SCD2 warning below).
 
 **Naming** — physical identities never derive from editable labels. `stable_app_identifier()`
@@ -51,6 +54,7 @@ derives the database, pipeline and dataset from the immutable app id; object tab
 `pydantic-settings` reads the environment and a `.env` file (`src/knack_elt/config.py`):
 - `KNACK_APP_ID` — Knack application id (pydantic `Field` alias); default for `--app-id`
 - `KNACK_API_KEY` — Knack REST API key (alias); default for `--api-key`
+- `KNACK_WAREHOUSE_NAME` — warehouse-name override (alias); default for `--name`
 - `motherduck_api_key` — required only for `--destination motherduck`
 
 The CLI validates that an app id and API key are present before doing any work.

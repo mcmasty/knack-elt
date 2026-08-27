@@ -416,3 +416,97 @@ def test_report_label_drift_never_raises_on_an_unexpected_error():
             raise RuntimeError("boom")
 
     cli_module._report_label_drift(ExplodingPipeline())  # must not raise
+
+
+def test_name_flag_pins_every_derived_identifier(tmp_path, monkeypatch):
+    """One name moves db file, dataset, pipeline and labels schema together.
+    Splitting them is how pipeline state ends up pointing at the wrong dataset."""
+    from knack_elt.cli import resolve_destination
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    resolved = resolve_destination("some-app-id", "local", None, name="avondale")
+    _, app_identifier, dataset_name, pipeline_name, local_db_path, _ = resolved
+    assert app_identifier == "avondale"
+    assert dataset_name == "avondale"
+    assert pipeline_name == "knack_avondale_pipeline"
+    assert local_db_path.name == "knack_avondale_data.duckdb"
+
+
+def test_omitting_name_keeps_the_derived_identifier(tmp_path, monkeypatch):
+    from knack_elt.cli import resolve_destination, stable_app_identifier
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    resolved = resolve_destination("some-app-id", "local", None, name=None)
+    assert resolved[1] == stable_app_identifier("some-app-id")
+
+
+@pytest.mark.parametrize("bad", [
+    "Avondale",          # uppercase folds in DuckDB; require the folded form up front
+    "1avondale",         # must start with a letter
+    "avon dale",         # whitespace
+    "avon-dale",         # hyphen breaks off in dlt normalization
+    "app_x_12ab34cd",    # looks like a derived identifier; colliding with a real one
+    "a" * 41,            # longer than the derived form ever is
+    "",
+])
+def test_invalid_warehouse_names_are_rejected_not_transformed(bad):
+    """Silently slugifying a name is how one app ends up with two warehouses."""
+    result = runner.invoke(cli, ["run-pipeline", "--app-id", "a", "--api-key", "k",
+                                 "--name", bad])
+    assert result.exit_code == 1
+    assert "name" in result.output.lower()
+
+
+def test_warehouse_name_comes_from_settings_when_no_flag(monkeypatch):
+    """KNACK_WAREHOUSE_NAME in .env makes the name sticky per project directory."""
+    from knack_elt.cli import settings
+
+    monkeypatch.setattr(settings, "warehouse_name", "Bad Name", raising=False)
+    result = runner.invoke(cli, ["run-pipeline", "--app-id", "a", "--api-key", "k"])
+    assert result.exit_code == 1
+    assert "name" in result.output.lower()
+
+
+def test_name_flag_beats_settings(monkeypatch, tmp_path):
+    from knack_elt.cli import resolve_warehouse_name, settings
+
+    monkeypatch.setattr(settings, "warehouse_name", "from_env", raising=False)
+    assert resolve_warehouse_name("from_flag") == "from_flag"
+    assert resolve_warehouse_name(None) == "from_env"
+
+
+def test_refresh_views_accepts_the_same_name(tmp_path):
+    """Both commands must address the same warehouse or a rename lands elsewhere."""
+    result = runner.invoke(cli, ["refresh-views", "--app-id", "a",
+                                 "--name", "avondale",
+                                 "--db-path", str(tmp_path / "none.duckdb"), "--yes"])
+    assert result.exit_code == 1
+    assert "No label catalogs" in result.output
+
+
+def test_mixed_usage_warns_when_the_derived_warehouse_also_exists(tmp_path, monkeypatch):
+    """--name today and no flag tomorrow silently splits SCD2 history. Warn, never
+    block - both warehouses are legitimate."""
+    from knack_elt.cli import stable_app_identifier, warn_on_sibling_warehouse
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    derived = stable_app_identifier("some-app-id")
+    base = tmp_path / "knack-elt"
+    base.mkdir(parents=True)
+    (base / f"knack_{derived}_data.duckdb").touch()
+
+    warning = warn_on_sibling_warehouse("some-app-id", "avondale", base)
+    assert warning is not None and derived in warning
+
+    (base / "knack_avondale_data.duckdb").touch()
+    warning = warn_on_sibling_warehouse("some-app-id", None, base)
+    assert warning is not None and "avondale" in warning
+
+
+def test_no_warning_when_only_one_warehouse_exists(tmp_path):
+    from knack_elt.cli import warn_on_sibling_warehouse
+
+    base = tmp_path / "knack-elt"
+    base.mkdir(parents=True)
+    (base / "knack_avondale_data.duckdb").touch()
+    assert warn_on_sibling_warehouse("some-app-id", "avondale", base) is None

@@ -65,7 +65,81 @@ def legacy_db_path(slug: str, directory: Path) -> Path:
     return directory / f"knack_{slug.replace('-', '_')}_data.duckdb"
 
 
-def resolve_destination(app_id: str, destination: str, db_path: Path | None):
+_WAREHOUSE_NAME = re.compile(r"[a-z][a-z0-9_]{0,39}$")
+_DERIVED_SHAPE = re.compile(r"app_.*_[0-9a-f]{8}$")
+
+
+def resolve_warehouse_name(flag_value: str | None) -> str | None:
+    """--name beats KNACK_WAREHOUSE_NAME beats None (derive from the app id).
+
+    An explicitly passed empty --name is returned as-is so validation rejects it;
+    silently treating it as "unset" would make a quoting mistake in a wrapper
+    script fall back to the derived name and split the warehouse.
+    """
+    if flag_value is not None:
+        return flag_value
+    return settings.warehouse_name or None
+
+
+def validate_warehouse_name(name: str) -> str | None:
+    """The reason a name is unusable, or None.
+
+    Validated, never transformed: DuckDB folds identifiers case-insensitively and
+    dlt normalizes names, so a name that silently becomes something else is how the
+    same app ends up with two warehouses. Requiring the already-folded form up
+    front means what you typed is what every layer uses.
+    """
+    if not _WAREHOUSE_NAME.match(name):
+        return (
+            f"invalid warehouse name {name!r}: must start with a lowercase letter and "
+            f"contain only lowercase letters, digits and underscores (max 40 chars)."
+        )
+    if _DERIVED_SHAPE.match(name):
+        return (
+            f"invalid warehouse name {name!r}: it has the shape of a derived "
+            f"identifier (app_*_<8 hex>), which risks colliding with a real one."
+        )
+    return None
+
+
+def warn_on_sibling_warehouse(app_id: str, name: str | None, directory: Path) -> str | None:
+    """A warning when this app's *other* naming also has a warehouse on disk.
+
+    --name today and no flag tomorrow silently splits SCD2 history across two
+    files - the same failure a CWD-relative default had. Warn, never block: both
+    warehouses are legitimate, and which one is stale is the operator's call.
+    """
+    derived = stable_app_identifier(app_id)
+    if name is not None and name != derived:
+        sibling, label = derived, "derived from the app id"
+    elif name is None:
+        candidates = [
+            path for path in directory.glob("knack_*_data.duckdb")
+            if not _DERIVED_SHAPE.match(path.name[len("knack_"):-len("_data.duckdb")])
+        ]
+        if not candidates:
+            return None
+        sibling_path = candidates[0]
+        return (
+            f"a named warehouse also exists at {sibling_path}. This run uses the "
+            f"derived name {derived!r}; if this app usually runs with --name (or "
+            f"KNACK_WAREHOUSE_NAME), running without it splits SCD2 history "
+            f"across two files."
+        )
+    else:
+        return None
+    sibling_file = directory / f"knack_{sibling}_data.duckdb"
+    if sibling_file.exists():
+        return (
+            f"a warehouse {label} also exists at {sibling_file}. This run uses "
+            f"--name {name!r}; mixing the two naming modes splits SCD2 history "
+            f"across two files."
+        )
+    return None
+
+
+def resolve_destination(app_id: str, destination: str, db_path: Path | None,
+                        name: str | None = None):
     """The dlt destination, dataset, pipeline name and warehouse identifiers both
     commands share.
 
@@ -75,7 +149,7 @@ def resolve_destination(app_id: str, destination: str, db_path: Path | None):
     `motherduck_api_key` *before* calling this - the token is embedded in the
     connection string built here.
     """
-    app_identifier = stable_app_identifier(app_id)
+    app_identifier = name or stable_app_identifier(app_id)
     dest_db_name = f"knack_{app_identifier}_data"
     dlt_pipeline_name = f"knack_{app_identifier}_pipeline"
     dataset_name = app_identifier
@@ -216,6 +290,15 @@ def run_pipeline(
         "--refresh-metadata",
         help="Re-fetch app metadata instead of using knack-sleuth's 24h on-disk cache.",
     ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        help="Warehouse name override: pins the db file, dataset, pipeline and "
+             "labels schema to knack_{name}_data / {name} / {name}_labels instead "
+             "of deriving them from the app id. Defaults to $KNACK_WAREHOUSE_NAME. "
+             "Once chosen, pass it on every run - mixing named and derived runs "
+             "splits SCD2 history across two warehouses.",
+    ),
     skip_unreadable: bool = typer.Option(
         False,
         "--skip-unreadable",
@@ -229,6 +312,7 @@ def run_pipeline(
     """Run the ELT pipeline for a Knack application."""
     final_app_id = app_id or settings.knack_app_id
     final_api_key = api_key or settings.knack_api_key
+    final_name = resolve_warehouse_name(name)
 
     if not final_app_id:
         console.print("[bold red]Error:[/bold red] app_id is required. Provide it via --app-id option or set KNACK_APP_ID environment variable.")
@@ -236,6 +320,10 @@ def run_pipeline(
 
     if not final_api_key:
         console.print("[bold red]Error:[/bold red] a Knack REST API key is required to read records. Provide it via --api-key or set KNACK_API_KEY.")
+        raise typer.Exit(code=1)
+
+    if final_name is not None and (reason := validate_warehouse_name(final_name)):
+        console.print(f"[bold red]Error:[/bold red] {reason}")
         raise typer.Exit(code=1)
 
     if destination not in ("local", "motherduck"):
@@ -255,7 +343,7 @@ def run_pipeline(
     # App slugs are editable display metadata. All physical identities derive from
     # the immutable application id so a URL rename cannot split SCD2 history.
     dlt_destination, app_identifier, dataset_name, dlt_pipeline_name, local_db_path, \
-        destination_label = resolve_destination(final_app_id, destination, db_path)
+        destination_label = resolve_destination(final_app_id, destination, db_path, name=final_name)
 
     if destination == "local":
         legacy_path = legacy_db_path(kn_app.slug, local_db_path.parent)
@@ -266,6 +354,9 @@ def run_pipeline(
                 f"immutable app id, so this run starts a fresh history at {local_db_path} "
                 f"and leaves the old file untouched."
             )
+        sibling = warn_on_sibling_warehouse(final_app_id, final_name, local_db_path.parent)
+        if sibling:
+            console.print(f"[bold yellow]Note:[/bold yellow] {sibling}")
 
     summary = Table(show_header=False, box=None)
     summary.add_column(style="bold")
@@ -361,6 +452,15 @@ def refresh_views(
         "--db-path",
         help="Local DuckDB file. Same default as run-pipeline.",
     ),
+    name: str = typer.Option(
+        None,
+        "--name",
+        help="Warehouse name override: pins the db file, dataset, pipeline and "
+             "labels schema to knack_{name}_data / {name} / {name}_labels instead "
+             "of deriving them from the app id. Defaults to $KNACK_WAREHOUSE_NAME. "
+             "Once chosen, pass it on every run - mixing named and derived runs "
+             "splits SCD2 history across two warehouses.",
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -373,11 +473,16 @@ def refresh_views(
     views reflect labels as of the last sync, not as of right now.
     """
     final_app_id = app_id or settings.knack_app_id
+    final_name = resolve_warehouse_name(name)
     if not final_app_id:
         console.print(
             "[bold red]Error:[/bold red] app_id is required. Provide it via "
             "--app-id option or set KNACK_APP_ID environment variable."
         )
+        raise typer.Exit(code=1)
+
+    if final_name is not None and (reason := validate_warehouse_name(final_name)):
+        console.print(f"[bold red]Error:[/bold red] {reason}")
         raise typer.Exit(code=1)
 
     if destination not in ("local", "motherduck"):
@@ -401,7 +506,7 @@ def refresh_views(
         raise typer.Exit(code=1)
 
     dlt_destination, _app_identifier, dataset_name, dlt_pipeline_name, _local_db_path, \
-        destination_label = resolve_destination(final_app_id, destination, db_path)
+        destination_label = resolve_destination(final_app_id, destination, db_path, name=final_name)
 
     pipeline = dlt.pipeline(
         pipeline_name=dlt_pipeline_name,
