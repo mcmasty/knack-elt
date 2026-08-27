@@ -144,7 +144,7 @@ flowchart TB
 | Schema | Owner | Contents | Rule |
 |---|---|---|---|
 | raw (the stable app-id dataset) | dlt | One `object_N` table per Knack object, `field_N` columns, full SCD2 history | **dbt never builds into it.** It is the pipeline's output, and a `dbt run` writing here would be clobbered on the next sync. |
-| `{stable_app_id}_labels` | knack-elt (`labels.py`) | Two views per object — `"Customers"` (live rows) and `"Classes_history"` (every version, plus `valid_from` / `valid_to` / `is_live_in_knack`) | Views only, disposable, rebuilt wholesale by `knack-elt refresh-views` — never automatically, never touching `object_N` / `field_N`. |
+| `{stable_app_id}_labels` | knack-elt (`labels.py`) | Two views per object — `"Customers"` (live rows) and `"Customers_history"` (every version, plus `valid_from` / `valid_to` / `is_live_in_knack`) | Views only, disposable, rebuilt wholesale by `knack-elt refresh-views` — never automatically, never touching `object_N` / `field_N`. |
 | `reporting` | dbt | Staging + mart views | Everything downstream reads here. No dashboard queries raw directly. |
 
 **Label views are this repo's, not the companion repo's.** `{stable_app_id}_labels` is generated

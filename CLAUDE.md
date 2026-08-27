@@ -127,7 +127,7 @@ reads the warehouse.
   set. Not incremental on purpose: if one object's new name is the name another object's view
   currently holds, any create-then-drop order transiently clobbers one of them mid-rebuild. The
   first failure rolls everything back; there is no partial state and no per-view failure list.
-- Two views per object — `"Customers"` (live rows) and `"Classes_history"` (every version, plus
+- Two views per object — `"Customers"` (live rows) and `"Customers_history"` (every version, plus
   `valid_from` / `valid_to` / `is_live_in_knack`) — because "current" has two meanings under
   SCD2, and conflating them is this file's first SCD2 trap below.
 - `{stable_app_id}_labels` is knack-elt-managed: every apply removes hand-authored **views**
