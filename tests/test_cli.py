@@ -160,8 +160,8 @@ def test_refresh_views_non_tty_refusal_is_real_not_a_missing_catalogs_coincidenc
 
     _pipeline, db_path = _synced_cli_warehouse(
         tmp_path, "cli-tty-1",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     monkeypatch.setattr(cli_module, "_stdin_is_tty", lambda: False)
 
@@ -191,8 +191,8 @@ def test_refresh_views_drops_everything_refuses_under_yes_without_a_tty(tmp_path
 
     pipeline, db_path = _synced_cli_warehouse(
         tmp_path, "cli-drops-1",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
     with pipeline.sql_client() as sql_client:
@@ -226,8 +226,8 @@ def test_refresh_views_drops_everything_still_prompts_under_yes(tmp_path, monkey
 
     pipeline, db_path = _synced_cli_warehouse(
         tmp_path, "cli-drops-2",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
     with pipeline.sql_client() as sql_client:
@@ -266,8 +266,8 @@ def test_refresh_views_non_tty_with_yes_applies_a_normal_plan(tmp_path):
 
     _pipeline, db_path = _synced_cli_warehouse(
         tmp_path, "cli-cron-1",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
 
     result = runner.invoke(cli, [
@@ -281,7 +281,7 @@ def test_refresh_views_non_tty_with_yes_applies_a_normal_plan(tmp_path):
         "select view_name from duckdb_views() where schema_name = ?", [schema]
     ).fetchall())
     con.close()
-    assert names == ["Classes", "Classes_history"]
+    assert names == ["Customers", "Customers_history"]
 
 
 def test_refresh_views_already_up_to_date_exits_zero_without_a_tty_or_yes(tmp_path):
@@ -292,8 +292,8 @@ def test_refresh_views_already_up_to_date_exits_zero_without_a_tty_or_yes(tmp_pa
 
     pipeline, db_path = _synced_cli_warehouse(
         tmp_path, "cli-cron-2",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
 
@@ -313,8 +313,8 @@ def test_report_label_drift_is_silent_when_the_labels_schema_does_not_exist(tmp_
 
     pipeline, _db_path = _synced_cli_warehouse(
         tmp_path, "cli-drift-none",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     cli_module._report_label_drift(pipeline)
     assert capsys.readouterr().out == ""
@@ -326,8 +326,8 @@ def test_report_label_drift_is_silent_when_up_to_date(tmp_path, capsys):
 
     pipeline, _db_path = _synced_cli_warehouse(
         tmp_path, "cli-drift-clean",
-        [("object_1", "Classes")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Customers")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
     cli_module._report_label_drift(pipeline)
@@ -340,17 +340,17 @@ def test_report_label_drift_prints_a_rename(tmp_path, capsys):
 
     pipeline, _db_path = _synced_cli_warehouse(
         tmp_path, "cli-drift-rename",
-        [("object_1", "Courses")], [("object_1", "field_1", "Name")],
-        {"object_1": [{"record_id": "1", "field_1": "Physics"}]},
+        [("object_1", "Clients")], [("object_1", "field_1", "Name")],
+        {"object_1": [{"record_id": "1", "field_1": "Acme Corp"}]},
     )
     apply_label_views(pipeline, plan_label_views(pipeline))
-    pipeline.run([{"object_id": "object_1", "object_name": "Classes"}],
+    pipeline.run([{"object_id": "object_1", "object_name": "Customers"}],
                  table_name="_kn_object_catalog", write_disposition="replace")
 
     cli_module._report_label_drift(pipeline)
     output = capsys.readouterr().out
     assert "Label drift" in output
-    assert "Courses" in output and "Classes" in output
+    assert "Clients" in output and "Customers" in output
     assert "refresh-views" in output
 
 
@@ -365,7 +365,7 @@ def test_run_pipeline_exit_code_survives_a_broken_drift_check(tmp_path, monkeypa
 
     import knack_elt.cli as cli_module
 
-    app = make_app([make_object("object_1", "Classes", [("field_1", "Name", "short_text")])],
+    app = make_app([make_object("object_1", "Customers", [("field_1", "Name", "short_text")])],
                     slug="cli-e2e-1")
     monkeypatch.setattr(
         cli_module, "load_app_metadata",
@@ -374,7 +374,7 @@ def test_run_pipeline_exit_code_survives_a_broken_drift_check(tmp_path, monkeypa
     monkeypatch.setattr(
         cli_module, "create_rest_client",
         lambda app_id, api_key: FakeClient(
-            {"object_1": [{"id": "1", "field_1": "Physics"}]}
+            {"object_1": [{"id": "1", "field_1": "Acme Corp"}]}
         ),
     )
 
