@@ -94,11 +94,21 @@ leaves nothing behind — the quickest way to point it at an app and see what co
 uvx --from knack-elt knack-elt run-pipeline --app-id your_app_id
 ```
 
-No database to provision first: with no `--destination`, the run writes a local DuckDB file
-(see [Destinations](#destinations)), so a Knack app id and REST API key are the only things you
-need to get a queryable warehouse. The throwaway environment is the Python install, not the
-data — the `.duckdb` file lands in `$XDG_DATA_HOME/knack-elt/` and stays there, so a later run
-(via `uvx` or an installed CLI) picks up the same warehouse and keeps accumulating SCD2 history.
+No database to provision first: with no `--destination`, the run writes a local DuckDB file, so
+a Knack app id and REST API key are the only things you need to get a queryable warehouse. It
+goes to
+
+```
+$XDG_DATA_HOME/knack-elt/knack_{stable_app_id}_data.duckdb
+```
+
+falling back to `~/.local/share/knack-elt/` when `XDG_DATA_HOME` is unset. The resolved absolute
+path is printed on every run, and `--db-path` overrides it — see
+[Destinations](#destinations) for why that location is not relative to the working directory.
+
+The throwaway environment is the Python install, not the data: that file stays put after the
+`uvx` environment is gone, so a later run — via `uvx` or an installed CLI — picks up the same
+warehouse and keeps accumulating SCD2 history.
 
 ### Install the CLI
 
