@@ -1,6 +1,6 @@
 [project]
 name = "knack-elt"
-version = "0.5.0"
+version = "0.6.0"
 description = "Generic ELT pipeline: extract any Knack application into DuckDB or MotherDuck with dlt, keeping full SCD2 history."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -54,7 +54,7 @@ ignore = [
 "src/knack_elt/cli.py" = ["B008"]
 
 [tool.bumpversion]
-current_version = "0.5.0"
+current_version = "0.6.0"
 commit = true
 tag = true
 allow_dirty = false
