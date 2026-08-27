@@ -85,18 +85,23 @@ four — MotherDuck, dbt and Preset, orchestrated by a daily GitHub Actions job 
 Requires **Python 3.13+**. Published on PyPI as
 [`knack-elt`](https://pypi.org/project/knack-elt/). Pick whichever fits:
 
-### Run it without installing
+### Kick the tires — no database required
 
-[uv](https://docs.astral.sh/uv/) fetches the package into a throwaway environment, so this
-leaves nothing behind — the quickest way to point it at an app and see what comes out:
+There is nothing to provision first. The default destination is a **local DuckDB file**, so a
+Knack app id and a REST API key are the only things you need, and [uv](https://docs.astral.sh/uv/)
+fetches the package into a throwaway environment. One command takes you from a Knack app to a
+queryable local warehouse:
 
 ```bash
-uvx --from knack-elt knack-elt run-pipeline --app-id your_app_id
+uvx --from knack-elt knack-elt run-pipeline \
+  --app-id your_app_id --api-key your_rest_api_key
 ```
 
-No database to provision first: with no `--destination`, the run writes a local DuckDB file, so
-a Knack app id and REST API key are the only things you need to get a queryable warehouse. It
-goes to
+Your REST API key comes from the Knack builder under **Settings → API & Code**. The pipeline
+only ever reads. No MotherDuck account, no server, no schema to write by hand — how long the
+run takes is just how long it takes to pull your records.
+
+The file it writes goes to
 
 ```
 $XDG_DATA_HOME/knack-elt/knack_{stable_app_id}_data.duckdb
@@ -106,9 +111,13 @@ falling back to `~/.local/share/knack-elt/` when `XDG_DATA_HOME` is unset. The r
 path is printed on every run, and `--db-path` overrides it — see
 [Destinations](#destinations) for why that location is not relative to the working directory.
 
-The throwaway environment is the Python install, not the data: that file stays put after the
-`uvx` environment is gone, so a later run — via `uvx` or an installed CLI — picks up the same
-warehouse and keeps accumulating SCD2 history.
+The *environment* is throwaway; the warehouse is not. That file stays put after the `uvx`
+environment is gone, so a later run — via `uvx` or an installed CLI — picks up the same
+warehouse and keeps accumulating SCD2 history. Open it with any DuckDB client:
+
+```bash
+duckdb ~/.local/share/knack-elt/knack_{stable_app_id}_data.duckdb
+```
 
 ### Install the CLI
 
@@ -151,8 +160,8 @@ export KNACK_API_KEY=your_rest_api_key
 knack-elt run-pipeline --app-id "$KNACK_APP_ID"
 ```
 
-Your Knack REST API key comes from the Knack builder under **Settings → API & Code**. The
-pipeline only ever reads.
+Both are read from the environment (or a `.env` file), so the flags are optional once they are
+set — see [Configuration](#configuration).
 
 Physical names derive from the immutable app id, not the editable app slug. The CLI prints the
 safe `{stable_app_id}` it derives, then uses database `knack_{stable_app_id}_data`, dataset
