@@ -174,14 +174,14 @@ knack-elt run-pipeline --app-id "$KNACK_APP_ID" --destination motherduck
 Physical tables and columns are keyed on immutable Knack ids — `object_N` tables, `field_N`
 columns — which is what keeps a rename in the Knack builder from splitting a record's SCD2
 history. The cost is that the warehouse alone is not friendly to browse: finding out that
-`object_3` is "Classes" means joining against `_kn_object_catalog`.
+`object_3` is "Customers" means joining against `_kn_object_catalog`.
 
 `knack-elt refresh-views` builds a disposable layer of views for that, in a schema separate from
 the data — `{stable_app_id}_labels` beside `{stable_app_id}` — named after the labels currently
 in `_kn_object_catalog` and `_kn_field_catalog`. Two views per object:
 
-- `"Classes"` — live rows only, columns aliased to current field labels. Point a BI tool here.
-- `"Classes_history"` — every version of every row, including ones deleted in Knack, plus
+- `"Customers"` — live rows only, columns aliased to current field labels. Point a BI tool here.
+- `"Customers_history"` — every version of every row, including ones deleted in Knack, plus
   `valid_from` / `valid_to` / `is_live_in_knack`. The split exists because "current" has two
   meanings under SCD2 — a view that only showed live rows would silently drop exactly the
   records the warehouse exists to keep, so the history form keeps them visible under a name that
