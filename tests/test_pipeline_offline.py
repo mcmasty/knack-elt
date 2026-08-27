@@ -224,11 +224,11 @@ def test_user_field_named_id_cannot_clobber_record_id(tmp_path):
 def test_knack_auto_record_id_field_cannot_clobber_the_merge_key(tmp_path):
     """Knack auto-adds a "Record ID" field holding a copy of the row id. Unreserved it
     would slugify onto record_id and overwrite the merge key."""
-    app = make_app([make_object("object_1", "Courses", [
+    app = make_app([make_object("object_1", "Clients", [
         ("field_1", "Record ID", "short_text"),
         ("field_2", "Title", "short_text"),
     ], singular="Course")])
-    rows = [{"id": "knack_row_1", "field_1": "knack_row_1", "field_2": "Physics"}]
+    rows = [{"id": "knack_row_1", "field_1": "knack_row_1", "field_2": "Acme Corp"}]
     con = load(app, FakeClient({"object_1": rows}), tmp_path / "t.duckdb")
     names = [c[0] for c in con.execute("select * from fresh_app.object_1 limit 0").description]
     row = dict(zip(names, con.execute("select * from fresh_app.object_1").fetchall()[0], strict=True))
@@ -250,10 +250,10 @@ def test_app_without_the_auto_record_id_field_still_keys_correctly(tmp_path):
 def test_scd2_lifecycle_across_two_loads(tmp_path):
     """The merge key change is only really exercised by a second load: an edited record
     must retire its old version, and a record that vanishes must be retired outright."""
-    app = make_app([make_object("object_1", "Courses", [("field_1", "Title", "short_text")])])
+    app = make_app([make_object("object_1", "Clients", [("field_1", "Title", "short_text")])])
     client = ScriptedClient([
-        [{"id": "r1", "field_1": "Physics"}, {"id": "r2", "field_1": "Chemistry"}],
-        [{"id": "r1", "field_1": "Physics II"}],   # r1 edited, r2 deleted in Knack
+        [{"id": "r1", "field_1": "Acme Corp"}, {"id": "r2", "field_1": "Globex Inc"}],
+        [{"id": "r1", "field_1": "Acme Corp v2"}],   # r1 edited, r2 deleted in Knack
     ])
     db = tmp_path / "t.duckdb"
     pipeline = dlt.pipeline(pipeline_name="test_scd2", dataset_name="fresh_app",
@@ -272,9 +272,9 @@ def test_scd2_lifecycle_across_two_loads(tmp_path):
     live = {(r[0], r[1]) for r in rows if r[2]}
     retired = {(r[0], r[1]) for r in rows if not r[2]}
 
-    assert live == {("r1", "Physics II")}, f"live rows wrong: {rows}"
-    assert ("r1", "Physics") in retired, "the edited record's old version should be retired"
-    assert ("r2", "Chemistry") in retired, "a record deleted in Knack should be retired"
+    assert live == {("r1", "Acme Corp v2")}, f"live rows wrong: {rows}"
+    assert ("r1", "Acme Corp") in retired, "the edited record's old version should be retired"
+    assert ("r2", "Globex Inc") in retired, "a record deleted in Knack should be retired"
     con.close()
 
 
@@ -580,23 +580,23 @@ def test_object_removed_from_metadata_retires_its_live_rows(tmp_path):
 
 def test_object_and_field_renames_keep_one_physical_identity(tmp_path):
     first_app = make_app([
-        make_object("object_1", "Courses", [("field_1", "Title", "short_text")]),
+        make_object("object_1", "Clients", [("field_1", "Title", "short_text")]),
     ])
     renamed_app = make_app([
-        make_object("object_1", "Classes", [("field_1", "Name", "short_text")]),
+        make_object("object_1", "Customers", [("field_1", "Name", "short_text")]),
     ], slug="renamed-app")
     db = tmp_path / "t.duckdb"
     pipeline = dlt.pipeline(pipeline_name="test_rename", dataset_name="fresh_app",
                             dev_mode=False, destination=dlt.destinations.duckdb(str(db)))
     status = {}
     pipeline.run(build_knack_resources(first_app, FakeClient({
-        "object_1": [{"id": "1", "field_1": "Physics"}],
+        "object_1": [{"id": "1", "field_1": "Acme Corp"}],
     }), extraction_status=status))
     reconcile_scd2_tables(pipeline, first_app, status)
 
     status = {}
     pipeline.run(build_knack_resources(renamed_app, FakeClient({
-        "object_1": [{"id": "1", "field_1": "Physics II"}],
+        "object_1": [{"id": "1", "field_1": "Acme Corp v2"}],
     }), extraction_status=status))
     reconcile_scd2_tables(pipeline, renamed_app, status)
 
@@ -610,7 +610,7 @@ def test_object_and_field_renames_keep_one_physical_identity(tmp_path):
         "select field_1, _dlt_valid_to is null from fresh_app.object_1 "
         "order by _dlt_valid_from"
     ).fetchall()
-    assert rows == [("Physics", False), ("Physics II", True)]
+    assert rows == [("Acme Corp", False), ("Acme Corp v2", True)]
     con.close()
 
 

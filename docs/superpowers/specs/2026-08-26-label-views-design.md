@@ -55,7 +55,7 @@ confirms the plan. `run-pipeline` reports drift and does nothing about it — th
 
 {stable_app_id}_labels       views only, managed by knack-elt, disposable
   "Customers"                  live rows, columns aliased to current labels
-  "Classes_history"          every version, plus validity columns
+  "Customers_history"          every version, plus validity columns
 ```
 
 A separate schema is what makes the layer safe. A Knack label can be any text, including
@@ -102,7 +102,7 @@ SELECT record_id,
 FROM {data}.object_3
 WHERE _dlt_valid_to IS NULL;
 
-CREATE OR REPLACE VIEW {labels}."Classes_history" AS
+CREATE OR REPLACE VIEW {labels}."Customers_history" AS
 SELECT record_id,
        field_1 AS "Name",
        field_2 AS "Start Date",
@@ -117,7 +117,7 @@ attributes an existing view to its object.
 
 The split exists because "current" has two meanings under SCD2 and conflating them is
 CLAUDE.md's first trap. `Customers` answers "what is in Knack now" and is what a BI tool should
-point at. `Classes_history` keeps the records deleted upstream — exactly the rows the warehouse
+point at. `Customers_history` keeps the records deleted upstream — exactly the rows the warehouse
 exists to preserve — visible under a name that says what they are, instead of silently absent.
 
 Lineage and dlt bookkeeping columns (`_kn_table_name`, `_kn_object_id`, `_dlt_id`,
@@ -131,7 +131,7 @@ as-is; this is verified working in DuckDB.
 
 | Case | Rule |
 | --- | --- |
-| Two objects labelled `Customers` | **Both** become `Classes__object_3` / `Classes__object_7`. Never one keeps the plain name. |
+| Two objects labelled `Customers` | **Both** become `Customers__object_3` / `Customers__object_7`. Never one keeps the plain name. |
 | Two objects labelled `Customers` and `customers` | Same rule. Identifiers are compared **folded**, not as exact strings — see below |
 | A label equals another object's `…_history` name | Base names are reserved in both forms before collisions are computed |
 | Empty or whitespace-only label | Falls back to the object key for an object, the field key for a field |
@@ -168,7 +168,7 @@ suffix, where an under-collision costs a view.
 ### Final uniqueness is asserted, not assumed
 
 The rules above are not trusted to be exhaustive. Legal Knack apps can reach past them — an
-object labelled literally `Classes__object_7` while two other objects are both labelled
+object labelled literally `Customers__object_7` while two other objects are both labelled
 `Customers`, or an object labelled `object_3` beside an object whose empty label falls back to
 `object_3`.
 

@@ -20,8 +20,8 @@ class LabelNameCollision(Exception):
 def fold(name: str) -> str:
     """The comparison form of an identifier.
 
-    DuckDB folds identifiers ASCII-case-insensitively even when quoted, so "Classes"
-    and "classes" are one catalog object and CREATE OR REPLACE silently replaces
+    DuckDB folds identifiers ASCII-case-insensitively even when quoted, so "Customers"
+    and "customers" are one catalog object and CREATE OR REPLACE silently replaces
     rather than erroring. Python's lower() also folds non-ASCII, which DuckDB does
     not - that over-collides, costing an unnecessary suffix, and never loses a view.
     """
